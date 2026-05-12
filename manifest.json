@@ -2,7 +2,7 @@
   "name": "Absensi QR — Himpunan",
   "short_name": "Absensi QR",
   "description": "Sistem absensi QR Code untuk kegiatan himpunan",
-  "start_url": "/",
+  "start_url": "/pwaAbsen/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0d0d0f",
@@ -20,5 +20,6 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ]
+  ],
+  "scope": "/pwaAbsen/"
 }
