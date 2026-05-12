@@ -1,0 +1,948 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Absensi QR — Himpunan</title>
+
+    <!-- PWA -->
+    <link rel="manifest" href="manifest.json" />
+    <meta name="theme-color" content="#00e5a0" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="apple-mobile-web-app-title" content="Absensi QR" />
+    <link rel="apple-touch-icon" href="icons/icon-192.png" />
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"
+    >
+      async function kirimSemuaKeSheets() {
+        if (!WEB_APP_URL || WEB_APP_URL.includes('GANTI_DENGAN')) {
+          alert('WEB_APP_URL belum diisi di kode!');
+          return;
+        }
+        if (logEntries.length === 0) {
+          alert('Belum ada data absensi untuk dikirim!');
+          return;
+        }
+
+        const btn = document.getElementById('btnKirim');
+        const status = document.getElementById('kirimStatus');
+        btn.disabled = true;
+        btn.textContent = '⏳ Mengirim...';
+        status.style.display = 'block';
+        status.style.background = 'rgba(255,209,102,0.1)';
+        status.style.color = 'var(--warn)';
+        status.style.border = '1px solid var(--warn)';
+        status.textContent = `Mengirim ${logEntries.length} data absensi...`;
+
+        // Kirim satu per satu dengan jeda kecil agar tidak overload Apps Script
+        let berhasil = 0;
+        let gagal = 0;
+
+        for (const entry of logEntries) {
+          try {
+            const params = new URLSearchParams({
+              action: 'absen',
+              nim: entry.nim,
+              nama: entry.nama || '',
+              divisi: entry.divisi || '',
+              agenda: agendaName,
+              waktu: entry.time,
+              tanggal: new Date().toLocaleDateString('id-ID')
+            });
+
+            await fetch(`${WEB_APP_URL}?${params.toString()}`, {
+              method: 'GET',
+              mode: 'no-cors',
+              redirect: 'follow'
+            });
+
+            berhasil++;
+            status.textContent = `Mengirim... ${berhasil}/${logEntries.length}`;
+
+            // Jeda 300ms antar request
+            await new Promise(r => setTimeout(r, 300));
+          } catch (err) {
+            gagal++;
+            console.warn('Gagal kirim:', entry.nim, err);
+          }
+        }
+
+        // Tampilkan hasil
+        if (gagal === 0) {
+          status.style.background = 'rgba(0,229,160,0.1)';
+          status.style.color = 'var(--accent)';
+          status.style.border = '1px solid var(--accent)';
+          status.textContent = `✓ ${berhasil} data berhasil dikirim ke Spreadsheet!`;
+        } else {
+          status.style.background = 'rgba(255,77,109,0.1)';
+          status.style.color = 'var(--danger)';
+          status.style.border = '1px solid var(--danger)';
+          status.textContent = `⚠ ${berhasil} berhasil, ${gagal} gagal. Coba lagi.`;
+        }
+
+        btn.disabled = false;
+        btn.textContent = '☁ Kirim Semua ke Spreadsheet';
+      }
+
+      // Register Service Worker (PWA)
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then(reg => console.log('SW registered:', reg.scope))
+            .catch(err => console.warn('SW failed:', err));
+        });
+      }
+    </script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #0d0d0f;
+        --surface: #16161a;
+        --border: #2a2a32;
+        --accent: #00e5a0;
+        --accent2: #005c40;
+        --text: #e8e8f0;
+        --muted: #6b6b80;
+        --danger: #ff4d6d;
+        --warn: #ffd166;
+      }
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Syne", sans-serif;
+        min-height: 100dvh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* Noise texture */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      .container {
+        position: relative;
+        z-index: 1;
+        max-width: 480px;
+        margin: 0 auto;
+        width: 100%;
+        padding: 0 16px 32px;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* Header */
+      header {
+        padding: 24px 0 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 24px;
+      }
+
+      .logo {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .logo-tag {
+        font-family: "Space Mono", monospace;
+        font-size: 10px;
+        color: var(--accent);
+        letter-spacing: 3px;
+        text-transform: uppercase;
+      }
+
+      .logo-title {
+        font-size: 20px;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+      }
+
+      .status-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--muted);
+        box-shadow: 0 0 0 3px rgba(107, 107, 128, 0.2);
+        transition: all 0.3s;
+      }
+      .status-dot.active {
+        background: var(--accent);
+        box-shadow:
+          0 0 0 5px rgba(0, 229, 160, 0.15),
+          0 0 12px var(--accent);
+        animation: pulse 2s infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          box-shadow:
+            0 0 0 5px rgba(0, 229, 160, 0.15),
+            0 0 12px var(--accent);
+        }
+        50% {
+          box-shadow:
+            0 0 0 8px rgba(0, 229, 160, 0.08),
+            0 0 20px var(--accent);
+        }
+      }
+
+      /* Setup Panel */
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 20px;
+        margin-bottom: 16px;
+      }
+
+      .panel-title {
+        font-size: 11px;
+        font-family: "Space Mono", monospace;
+        color: var(--accent);
+        letter-spacing: 2px;
+        text-transform: uppercase;
+        margin-bottom: 16px;
+      }
+
+      .field {
+        margin-bottom: 14px;
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 6px;
+        font-family: "Space Mono", monospace;
+      }
+
+      input,
+      select {
+        width: 100%;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 11px 14px;
+        color: var(--text);
+        font-family: "Space Mono", monospace;
+        font-size: 13px;
+        transition: border-color 0.2s;
+        outline: none;
+      }
+
+      input:focus,
+      select:focus {
+        border-color: var(--accent);
+      }
+
+      input::placeholder {
+        color: var(--muted);
+      }
+
+      .btn {
+        width: 100%;
+        padding: 14px;
+        border-radius: 12px;
+        border: none;
+        font-family: "Syne", sans-serif;
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        letter-spacing: 0.3px;
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        color: #000;
+      }
+
+      .btn-primary:hover {
+        background: #00ffb3;
+        transform: translateY(-1px);
+        box-shadow: 0 8px 24px rgba(0, 229, 160, 0.3);
+      }
+
+      .btn-primary:active {
+        transform: translateY(0);
+      }
+
+      .btn-danger {
+        background: transparent;
+        border: 1px solid var(--danger);
+        color: var(--danger);
+        margin-top: 10px;
+      }
+
+      .btn-danger:hover {
+        background: rgba(255, 77, 109, 0.1);
+      }
+
+      /* Scanner */
+      #scanner-section {
+        display: none;
+      }
+
+      .scanner-wrap {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        overflow: hidden;
+        position: relative;
+        margin-bottom: 16px;
+      }
+
+      .scanner-header {
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .scanner-label {
+        font-family: "Space Mono", monospace;
+        font-size: 11px;
+        color: var(--accent);
+        letter-spacing: 2px;
+        text-transform: uppercase;
+      }
+
+      .agenda-badge {
+        background: var(--accent2);
+        color: var(--accent);
+        font-family: "Space Mono", monospace;
+        font-size: 10px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #reader {
+        width: 100% !important;
+      }
+
+      #reader video {
+        border-radius: 0 !important;
+      }
+
+      /* Scan frame overlay */
+      .scan-overlay {
+        position: absolute;
+        top: 56px;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        pointer-events: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .scan-frame {
+        width: 180px;
+        height: 180px;
+        position: relative;
+      }
+
+      .scan-frame::before,
+      .scan-frame::after,
+      .scan-frame span::before,
+      .scan-frame span::after {
+        content: "";
+        position: absolute;
+        width: 24px;
+        height: 24px;
+        border-color: var(--accent);
+        border-style: solid;
+      }
+
+      .scan-frame::before {
+        top: 0;
+        left: 0;
+        border-width: 3px 0 0 3px;
+      }
+      .scan-frame::after {
+        top: 0;
+        right: 0;
+        border-width: 3px 3px 0 0;
+      }
+      .scan-frame span::before {
+        bottom: 0;
+        left: 0;
+        border-width: 0 0 3px 3px;
+      }
+      .scan-frame span::after {
+        bottom: 0;
+        right: 0;
+        border-width: 0 3px 3px 0;
+      }
+
+      .scan-line {
+        position: absolute;
+        left: 8px;
+        right: 8px;
+        height: 2px;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          var(--accent),
+          transparent
+        );
+        animation: scanline 2s ease-in-out infinite;
+        box-shadow: 0 0 8px var(--accent);
+      }
+
+      @keyframes scanline {
+        0% {
+          top: 8px;
+        }
+        50% {
+          top: calc(100% - 10px);
+        }
+        100% {
+          top: 8px;
+        }
+      }
+
+      /* Toast / Result */
+      .toast {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%) translateY(100px);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 16px 20px;
+        width: calc(100% - 32px);
+        max-width: 448px;
+        transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .toast.show {
+        transform: translateX(-50%) translateY(0);
+      }
+      .toast.success {
+        border-color: var(--accent);
+      }
+      .toast.error {
+        border-color: var(--danger);
+      }
+      .toast.warning {
+        border-color: var(--warn);
+      }
+
+      .toast-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 20px;
+        flex-shrink: 0;
+      }
+
+      .toast.success .toast-icon {
+        background: rgba(0, 229, 160, 0.15);
+      }
+      .toast.error .toast-icon {
+        background: rgba(255, 77, 109, 0.15);
+      }
+      .toast.warning .toast-icon {
+        background: rgba(255, 209, 102, 0.15);
+      }
+
+      .toast-body {
+        flex: 1;
+      }
+      .toast-name {
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .toast-sub {
+        font-size: 12px;
+        color: var(--muted);
+        font-family: "Space Mono", monospace;
+        margin-top: 2px;
+      }
+
+      /* Log */
+      .log-section {
+        margin-top: 4px;
+      }
+
+      .log-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .log-title {
+        font-family: "Space Mono", monospace;
+        font-size: 11px;
+        color: var(--muted);
+        letter-spacing: 2px;
+        text-transform: uppercase;
+      }
+
+      .log-count {
+        background: var(--accent2);
+        color: var(--accent);
+        font-family: "Space Mono", monospace;
+        font-size: 11px;
+        padding: 3px 10px;
+        border-radius: 20px;
+      }
+
+      .log-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 280px;
+        overflow-y: auto;
+        padding-right: 4px;
+      }
+
+      .log-list::-webkit-scrollbar {
+        width: 4px;
+      }
+      .log-list::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .log-list::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 2px;
+      }
+
+      .log-item {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px 14px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        animation: slideIn 0.3s ease;
+      }
+
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateY(-8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .log-num {
+        font-family: "Space Mono", monospace;
+        font-size: 11px;
+        color: var(--muted);
+        min-width: 24px;
+      }
+
+      .log-info {
+        flex: 1;
+      }
+      .log-name {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .log-nim {
+        font-family: "Space Mono", monospace;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .log-time {
+        font-family: "Space Mono", monospace;
+        font-size: 10px;
+        color: var(--accent);
+      }
+
+      .empty-state {
+        text-align: center;
+        padding: 32px;
+        color: var(--muted);
+        font-size: 13px;
+        font-family: "Space Mono", monospace;
+      }
+
+      .divider {
+        height: 1px;
+        background: var(--border);
+        margin: 20px 0;
+      }
+
+      /* Sending indicator */
+      .sending {
+        opacity: 0.6;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+        vertical-align: middle;
+        margin-right: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div class="logo">
+          <span class="logo-tag">System</span>
+          <span class="logo-title">Absensi QR</span>
+        </div>
+        <div class="status-dot" id="statusDot"></div>
+      </header>
+
+      <!-- Setup Panel -->
+      <div id="setup-section">
+        <div class="panel" style="border-color: #1a3a2a">
+          <div class="panel-title" style="color: var(--accent)">
+            // Terhubung ke Google Sheets
+          </div>
+          <div
+            style="
+              font-family: &quot;Space Mono&quot;, monospace;
+              font-size: 11px;
+              color: var(--muted);
+              line-height: 1.8;
+            "
+          >
+            Web App URL sudah tertanam di aplikasi ini.<br />
+            Cukup isi nama agenda di bawah, lalu mulai scan.
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">// Info Agenda</div>
+
+          <div class="field">
+            <label>NAMA AGENDA</label>
+            <input
+              type="text"
+              id="agendaName"
+              placeholder="Contoh: Rapat Pleno #3"
+            />
+          </div>
+
+          <div class="field">
+            <label>FORMAT QR CODE DI ID CARD</label>
+            <select id="qrFormat">
+              <option value="nim_nama">
+                NIM|NAMA|DIVISI (contoh: 2023001|Budi|Kominfo)
+              </option>
+              <option value="nim_only">NIM saja</option>
+              <option value="json">JSON {"nim":"...","nama":"..."}</option>
+            </select>
+          </div>
+
+          <button class="btn btn-primary" onclick="startScanner()">
+            Mulai Scan Absensi →
+          </button>
+        </div>
+
+        <div class="panel" style="border-color: #2a2a20">
+          <div class="panel-title" style="color: var(--warn)">
+            // Cara Setup (baca dulu)
+          </div>
+          <ol
+            style="
+              font-size: 12px;
+              color: var(--muted);
+              font-family: &quot;Space Mono&quot;, monospace;
+              line-height: 1.8;
+              padding-left: 18px;
+            "
+          >
+            <li>Buat Google Spreadsheet baru</li>
+            <li>Buka Extensions → Apps Script</li>
+            <li>Paste kode Apps Script (lihat file terpisah)</li>
+            <li>Deploy → New deployment → Web App</li>
+            <li>Set "Who has access" = Anyone</li>
+            <li>Copy URL-nya ke kolom di atas</li>
+          </ol>
+        </div>
+      </div>
+
+      <!-- Scanner Section -->
+      <div id="scanner-section">
+        <div class="scanner-wrap">
+          <div class="scanner-header">
+            <span class="scanner-label">// Kamera Aktif</span>
+            <span class="agenda-badge" id="agendaBadge">—</span>
+          </div>
+          <div id="reader"></div>
+          <div class="scan-overlay">
+            <div class="scan-frame">
+              <span></span>
+              <div class="scan-line"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="log-section">
+          <div class="log-header">
+            <span class="log-title">// Log Masuk</span>
+            <span class="log-count" id="logCount">0 orang</span>
+          </div>
+          <div class="log-list" id="logList">
+            <div class="empty-state">Belum ada yang scan...</div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+        <button
+          class="btn btn-primary"
+          id="btnKirim"
+          onclick="kirimSemuaKeSheets()"
+          style="margin-bottom: 10px"
+        >
+          ☁ Kirim Semua ke Spreadsheet
+        </button>
+        <div
+          id="kirimStatus"
+          style="
+            display: none;
+            font-family: &quot;Space Mono&quot;, monospace;
+            font-size: 11px;
+            padding: 10px 14px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+          "
+        ></div>
+        <button class="btn btn-danger" onclick="stopScanner()">
+          ← Ganti Pengaturan
+        </button>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast">
+      <div class="toast-icon" id="toastIcon">✓</div>
+      <div class="toast-body">
+        <div class="toast-name" id="toastName">—</div>
+        <div class="toast-sub" id="toastSub">—</div>
+      </div>
+    </div>
+
+    <script>
+      // ✏️ GANTI URL INI dengan Web App URL dari Apps Script kamu
+      const WEB_APP_URL =
+        "https://script.google.com/macros/s/AKfycbxXGhAMK1Ll6u-fBChsx96U7gl9AASEPD_HSfZql5fLgfNnfuMgFw2xSAb3Dt4WIPC-2g/exec";
+
+      let html5QrCode = null;
+      let scannedNIMs = new Set();
+      let logEntries = [];
+      let agendaName = "";
+      let qrFormat = "nim_nama";
+      let scanCooldown = false;
+
+      function parseQR(raw) {
+        raw = raw.trim();
+        const fmt = document.getElementById("qrFormat").value;
+
+        if (fmt === "json") {
+          try {
+            const obj = JSON.parse(raw);
+            return {
+              nim: obj.nim || obj.NIM || raw,
+              nama: obj.nama || obj.NAMA || "",
+              divisi: obj.divisi || obj.DIVISI || "",
+            };
+          } catch {
+            return { nim: raw, nama: "" };
+          }
+        }
+
+        if (fmt === "nim_nama") {
+          const parts = raw.split("|");
+          if (parts.length >= 2)
+            return {
+              nim: parts[0].trim(),
+              nama: parts[1].trim(),
+              divisi: (parts[2] || "").trim(),
+            };
+          return { nim: raw, nama: "", divisi: "" };
+        }
+
+        return { nim: raw, nama: "", divisi: "" };
+      }
+
+      function showToast(type, icon, name, sub) {
+        const toast = document.getElementById("toast");
+        toast.className = `toast ${type}`;
+        document.getElementById("toastIcon").textContent = icon;
+        document.getElementById("toastName").textContent = name;
+        document.getElementById("toastSub").textContent = sub;
+        toast.classList.add("show");
+        setTimeout(() => toast.classList.remove("show"), 3000);
+      }
+
+      function addLog(nim, nama, divisi) {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString("id-ID", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        logEntries.unshift({ nim, nama, divisi, time: timeStr });
+
+        const list = document.getElementById("logList");
+        const item = document.createElement("div");
+        item.className = "log-item";
+        item.innerHTML = `
+      <span class="log-num">#${logEntries.length}</span>
+      <div class="log-info">
+        <div class="log-name">${nama || "—"}</div>
+        <div class="log-nim">${nim}${divisi ? " · " + divisi : ""}</div>
+      </div>
+      <span class="log-time">${timeStr}</span>
+    `;
+
+        if (list.querySelector(".empty-state")) list.innerHTML = "";
+        list.insertBefore(item, list.firstChild);
+
+        document.getElementById("logCount").textContent =
+          `${logEntries.length} orang`;
+      }
+
+      function sendToSheets(nim, nama, divisi) {
+        if (!WEB_APP_URL || WEB_APP_URL.includes("GANTI_DENGAN")) {
+          console.warn("WEB_APP_URL belum diisi!");
+          return;
+        }
+        const now = new Date();
+        const params = new URLSearchParams({
+          action: "absen",
+          nim,
+          nama,
+          divisi,
+          agenda: agendaName,
+          tanggal: now.toLocaleDateString("id-ID"),
+          waktu: now.toLocaleTimeString("id-ID"),
+        });
+        // fetch no-cors: request tetap sampai ke Apps Script meski response tidak bisa dibaca
+        fetch(`${WEB_APP_URL}?${params.toString()}`, {
+          method: "GET",
+          mode: "no-cors",
+          redirect: "follow",
+        }).catch((err) => console.warn("Gagal kirim:", err));
+      }
+
+      function onScanSuccess(decodedText) {
+        if (scanCooldown) return;
+        scanCooldown = true;
+        setTimeout(() => (scanCooldown = false), 2000);
+
+        const { nim, nama, divisi } = parseQR(decodedText);
+
+        if (scannedNIMs.has(nim)) {
+          showToast("warning", "⚠", nama || nim, "Sudah absen sebelumnya!");
+          return;
+        }
+
+        scannedNIMs.add(nim);
+        addLog(nim, nama, divisi);
+        sendToSheets(nim, nama, divisi);
+        showToast(
+          "success",
+          "✓",
+          nama || nim,
+          `NIM: ${nim}${divisi ? " · " + divisi : ""} · ${agendaName}`,
+        );
+
+        // Haptic feedback jika support
+        if (navigator.vibrate) navigator.vibrate(50);
+      }
+
+      function startScanner() {
+        agendaName = document.getElementById("agendaName").value.trim();
+
+        if (!agendaName) {
+          alert("Isi nama agenda dulu!");
+          return;
+        }
+
+        document.getElementById("setup-section").style.display = "none";
+        document.getElementById("scanner-section").style.display = "block";
+        document.getElementById("agendaBadge").textContent = agendaName;
+        document.getElementById("statusDot").classList.add("active");
+
+        html5QrCode = new Html5Qrcode("reader");
+        const config = {
+          fps: 10,
+          qrbox: { width: 220, height: 220 },
+          aspectRatio: 1.0,
+          showTorchButtonIfSupported: true,
+        };
+
+        html5QrCode
+          .start({ facingMode: "environment" }, config, onScanSuccess, () => {})
+          .catch((err) => {
+            alert("Tidak bisa akses kamera: " + err);
+            stopScanner();
+          });
+      }
+
+      function stopScanner() {
+        if (html5QrCode) {
+          html5QrCode.stop().catch(() => {});
+          html5QrCode = null;
+        }
+        document.getElementById("setup-section").style.display = "block";
+        document.getElementById("scanner-section").style.display = "none";
+        document.getElementById("statusDot").classList.remove("active");
+      }
+    </script>
+  </body>
+</html>
