@@ -1365,6 +1365,7 @@
             class="btn btn-ghost"
             id="btnKirim"
             onclick="kirimSemuaKeSheets()"
+            title="Gunakan setelah sesi absensi selesai"
           >
             <svg
               width="16"
@@ -1409,6 +1410,8 @@
       let html5QrCode = null;
       let scannedNIMs = new Set();
       let logEntries = [];
+      let logSequence = 0;
+      let sessionId = 0;
       let agendaName = "";
       let scanCooldown = false;
       window._kategori = "RAPAT";
@@ -1737,57 +1740,120 @@
       }
 
       // ── Log ───────────────────────────────────────────────────
-      function addLog(nim, nama, divisi, keterangan) {
-        const status = String(keterangan || "HADIR").toUpperCase();
-        const now = new Date();
-        const timeStr = now.toLocaleTimeString("id-ID", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        });
-        logEntries.unshift({
-          nim,
-          nama,
-          divisi,
-          keterangan: status,
-          time: timeStr,
-        });
-
-        const list = document.getElementById("logList");
-        if (list.querySelector(".empty-state")) list.innerHTML = "";
+      function getLogStyle(status, pending) {
+        if (pending) {
+          return {
+            style: "background:#F1F5F9;color:#475569",
+            border: "#94A3B8",
+            label: "Menyimpan...",
+          };
+        }
 
         const colors = {
           HADIR: {
             style: "background:#E6F4EA;color:#0F9D58",
             border: "#0F9D58",
+            label: "Hadir",
           },
           IZIN: {
             style: "background:#E3F2FD;color:#1565C0",
             border: "#1565C0",
+            label: "Izin",
           },
           SAKIT: {
             style: "background:#FEF7E0;color:#7A5300",
             border: "#F9AB00",
+            label: "Sakit",
           },
         };
-        const color = colors[status] || colors.HADIR;
 
-        const item = document.createElement("div");
-        item.className = "log-item";
-        item.style.borderLeftColor = color.border;
-        item.innerHTML = `
-      <span class="log-num">#${logEntries.length}</span>
-      <div class="log-info">
-        <div class="log-name">${escapeHtml(nama || "—")}</div>
-        <div class="log-meta">${escapeHtml(nim)}${divisi ? " · " + escapeHtml(divisi) : ""}</div>
-      </div>
-      <span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;font-family:'DM Mono',monospace;${color.style}">${statusLabel(status)}</span>
-      <span class="log-time">${timeStr}</span>
-    `;
+        return colors[String(status || "HADIR").toUpperCase()] || colors.HADIR;
+      }
 
-        list.insertBefore(item, list.firstChild);
-        document.getElementById("logCount").textContent =
-          `${logEntries.length} orang`;
+      function renderLog() {
+        const list = document.getElementById("logList");
+        const count = document.getElementById("logCount");
+
+        count.textContent = `${logEntries.length} orang`;
+
+        if (!logEntries.length) {
+          list.innerHTML = `
+        <div class="empty-state">
+          <span class="empty-icon">📋</span>
+          Belum ada yang scan pada agenda ini...
+        </div>
+      `;
+          return;
+        }
+
+        list.innerHTML = logEntries
+          .map((entry) => {
+            const color = getLogStyle(entry.keterangan, entry.pending);
+            const label = color.label || statusLabel(entry.keterangan);
+            const name = entry.nama || `NIM ${entry.nim}`;
+            const time = entry.pending ? "..." : entry.time;
+            const meta = `${escapeHtml(entry.nim)}${entry.divisi ? " · " + escapeHtml(entry.divisi) : ""}`;
+
+            return `
+        <div class="log-item" data-log-id="${escapeHtml(entry.id)}" style="border-left-color:${color.border}">
+          <span class="log-num">#${entry.sequence}</span>
+          <div class="log-info">
+            <div class="log-name">${escapeHtml(name)}</div>
+            <div class="log-meta">${meta}</div>
+          </div>
+          <span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;font-family:'DM Mono',monospace;${color.style}">${label}</span>
+          <span class="log-time">${escapeHtml(time)}</span>
+        </div>
+      `;
+          })
+          .join("");
+      }
+
+      function addPendingLog(nim, nama, divisi, keterangan) {
+        const now = new Date();
+        const id = `log-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const timeStr = now.toLocaleTimeString("id-ID", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+
+        logEntries.unshift({
+          id,
+          sequence: ++logSequence,
+          nim,
+          nama: nama || `Memproses NIM ${nim}...`,
+          divisi: divisi || "",
+          keterangan: String(keterangan || "HADIR").toUpperCase(),
+          time: timeStr,
+          pending: true,
+        });
+        renderLog();
+        return id;
+      }
+
+      function finalizeLog(id, data, keterangan) {
+        const entry = logEntries.find((item) => item.id === id);
+        if (!entry) return;
+
+        entry.nama = data.nama || entry.nama;
+        entry.divisi = data.divisi || entry.divisi;
+        entry.keterangan = String(
+          keterangan || entry.keterangan || "HADIR",
+        ).toUpperCase();
+        entry.pending = false;
+        renderLog();
+      }
+
+      function removeLog(id) {
+        logEntries = logEntries.filter((item) => item.id !== id);
+        renderLog();
+      }
+
+      function resetSessionLog() {
+        logEntries = [];
+        logSequence = 0;
+        renderLog();
       }
 
       // ── Kirim absensi real-time ───────────────────────────────
@@ -1811,44 +1877,50 @@
         if (!nim) return false;
 
         if (scannedNIMs.has(nim)) {
-          showToast("warning", "⚠", nim, "Sudah tercatat pada sesi ini.");
+          showToast(
+            "warning",
+            "⚠",
+            nim,
+            "Sudah tercatat atau sedang diproses pada sesi ini.",
+          );
           return false;
         }
 
-        const anggota = await lookupNIM(nim);
-        if (!anggota) {
-          showToast(
-            "error",
-            "✕",
-            `NIM ${nim}`,
-            "NIM tidak terdaftar di data anggota.",
-          );
-          if (showInvalidPopup)
-            alert(
-              `NIM ${nim} tidak terdaftar.\nSilakan periksa kembali NIM anggota.`,
-            );
-          return false;
-        }
+        // Kunci NIM dan tampilkan log lebih dulu agar hasil scan terasa instan.
+        // Validasi akhir tetap dilakukan oleh Apps Script sebelum data disimpan.
+        scannedNIMs.add(nim);
+        const anggotaCache = _anggotaCache[nim] || {};
+        const requestSession = sessionId;
+        const logId = addPendingLog(
+          nim,
+          anggotaCache.nama,
+          anggotaCache.divisi,
+          keterangan,
+        );
 
         try {
           const json = await sendToSheets(
             nim,
-            anggota.nama,
-            anggota.divisi,
+            anggotaCache.nama || "",
+            anggotaCache.divisi || "",
             keterangan,
           );
 
           if (json.status === "duplicate") {
-            scannedNIMs.add(nim);
+            scannedNIMs.delete(nim);
+            if (requestSession === sessionId) removeLog(logId);
             showToast(
               "warning",
               "⚠",
-              anggota.nama,
+              anggotaCache.nama || nim,
               "Sudah tercatat pada agenda ini.",
             );
             return false;
           }
+
           if (json.status === "not_found") {
+            scannedNIMs.delete(nim);
+            if (requestSession === sessionId) removeLog(logId);
             showToast(
               "error",
               "✕",
@@ -1859,28 +1931,39 @@
               alert(json.message || `NIM ${nim} tidak terdaftar.`);
             return false;
           }
-          if (json.status !== "ok")
+
+          if (json.status !== "ok") {
             throw new Error(json.message || "Data gagal disimpan.");
+          }
 
-          const data = json.data || anggota;
-          scannedNIMs.add(nim);
-          addLog(
+          const data = json.data || {
             nim,
-            data.nama || anggota.nama,
-            data.divisi || anggota.divisi,
-            keterangan,
-          );
+            nama: anggotaCache.nama || "",
+            divisi: anggotaCache.divisi || "",
+          };
+          _anggotaCache[nim] = {
+            nim,
+            nama: data.nama || anggotaCache.nama || "",
+            divisi: data.divisi || anggotaCache.divisi || "",
+          };
 
-          const icons = { HADIR: "✓", IZIN: "📋", SAKIT: "🤒" };
-          showToast(
-            "success",
-            icons[String(keterangan).toUpperCase()] || "✓",
-            data.nama || anggota.nama,
-            `${statusLabel(keterangan)} · ${window._kategori} • ${agendaName}`,
-          );
+          if (requestSession === sessionId) {
+            finalizeLog(logId, data, keterangan);
+            const icons = { HADIR: "✓", IZIN: "📋", SAKIT: "🤒" };
+            showToast(
+              "success",
+              icons[String(keterangan).toUpperCase()] || "✓",
+              data.nama || anggotaCache.nama || nim,
+              `${statusLabel(keterangan)} · ${window._kategori} • ${agendaName}`,
+            );
+          }
           return true;
         } catch (err) {
-          showToast("error", "✕", "Gagal menyimpan absensi", err.message);
+          scannedNIMs.delete(nim);
+          if (requestSession === sessionId) {
+            removeLog(logId);
+            showToast("error", "✕", "Gagal menyimpan absensi", err.message);
+          }
           return false;
         }
       }
@@ -1912,9 +1995,11 @@
       async function onScanSuccess(decodedText) {
         if (scanCooldown) return;
         scanCooldown = true;
+        // Cooldown dipersingkat agar scan berikutnya tetap responsif,
+        // sementara NIM yang sama tetap dikunci melalui scannedNIMs.
         setTimeout(() => {
           scanCooldown = false;
-        }, 1800);
+        }, 700);
 
         const qrData = parseQR(decodedText);
         const nim = String(qrData.nim || "").trim();
@@ -1953,7 +2038,8 @@
         window._kategori = kategori;
         agendaName = agenda;
         scannedNIMs = new Set();
-        logEntries = [];
+        sessionId++;
+        resetSessionLog();
 
         document.getElementById("setup-section").style.display = "none";
         document.getElementById("import-section").style.display = "none";
