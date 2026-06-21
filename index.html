@@ -1253,22 +1253,29 @@
               <span class="card-label">Input Manual</span>
             </div>
             <div class="card-body">
-              <div
-                style="
-                  display: grid;
-                  grid-template-columns: 1fr 1fr;
-                  gap: 10px;
-                  margin-bottom: 12px;
-                "
-              >
-                <div>
-                  <label>NIM</label>
-                  <input type="text" id="manualNim" placeholder="NIM anggota" />
-                </div>
-                <div>
-                  <label>NAMA</label>
-                  <input type="text" id="manualNama" placeholder="Nama" />
-                </div>
+              <div class="field" style="margin-bottom: 12px">
+                <label>NIM ANGGOTA</label>
+                <input
+                  type="text"
+                  id="manualNim"
+                  placeholder="Masukkan NIM"
+                  inputmode="numeric"
+                  style="font-family: &quot;DM Mono&quot;, monospace"
+                />
+                <div
+                  id="manualInfo"
+                  style="
+                    display: none;
+                    margin-top: 6px;
+                    padding: 8px 12px;
+                    background: var(--blue-lightest);
+                    border: 1px solid var(--blue-light);
+                    border-radius: var(--radius-xs);
+                    font-size: 12px;
+                    color: var(--blue-dark);
+                    font-family: &quot;DM Mono&quot;, monospace;
+                  "
+                ></div>
               </div>
               <div
                 style="
@@ -1279,7 +1286,7 @@
               >
                 <button
                   class="btn btn-ghost"
-                  onclick="inputManual('Hadir')"
+                  onclick="inputManual('HADIR')"
                   style="
                     font-size: 13px;
                     padding: 10px;
@@ -1292,14 +1299,20 @@
                 </button>
                 <button
                   class="btn btn-ghost"
-                  onclick="inputManual('Izin')"
-                  style="font-size: 13px; padding: 10px"
+                  onclick="inputManual('IZIN')"
+                  style="
+                    font-size: 13px;
+                    padding: 10px;
+                    border-color: #1565c0;
+                    color: #1565c0;
+                    background: #e3f2fd;
+                  "
                 >
                   📋 Izin
                 </button>
                 <button
                   class="btn btn-ghost"
-                  onclick="inputManual('Sakit')"
+                  onclick="inputManual('SAKIT')"
                   style="
                     font-size: 13px;
                     padding: 10px;
@@ -1394,34 +1407,96 @@
       }
 
       // ── Input Manual Izin/Sakit/Hadir ────────────────────────
-      function inputManual(keterangan) {
-        const nim = document.getElementById("manualNim").value.trim();
-        const nama = document.getElementById("manualNama").value.trim();
+      // Cache data anggota dari Apps Script (lookup NIM)
+      const _anggotaCache = {};
 
+      async function lookupNIM(nim) {
+        if (_anggotaCache[nim]) return _anggotaCache[nim];
+        try {
+          const params = new URLSearchParams({ action: "lookup", nim });
+          const res = await fetch(`${WEB_APP_URL}?${params.toString()}`);
+          const json = await res.json();
+          if (json.status === "ok" && json.data) {
+            _anggotaCache[nim] = json.data;
+            return json.data;
+          }
+          return null;
+        } catch {
+          return null;
+        }
+      }
+
+      // Preview info anggota saat NIM diketik (debounce 600ms)
+      let _nimDebounce = null;
+      document.addEventListener("DOMContentLoaded", () => {
+        const nimInput = document.getElementById("manualNim");
+        if (nimInput) {
+          nimInput.addEventListener("input", () => {
+            clearTimeout(_nimDebounce);
+            const infoEl = document.getElementById("manualInfo");
+            infoEl.style.display = "none";
+            _nimDebounce = setTimeout(async () => {
+              const nim = nimInput.value.trim();
+              if (!nim) return;
+              const data = await lookupNIM(nim);
+              if (data) {
+                infoEl.style.display = "block";
+                infoEl.textContent = `✓ ${data.nama} · ${data.divisi}`;
+              } else {
+                infoEl.style.display = "block";
+                infoEl.style.background = "#FCE8E6";
+                infoEl.style.borderColor = "#D93025";
+                infoEl.style.color = "#D93025";
+                infoEl.textContent = "NIM tidak ditemukan di data anggota";
+              }
+            }, 600);
+          });
+        }
+      });
+
+      async function inputManual(keterangan) {
+        const nim = document.getElementById("manualNim").value.trim();
         if (!nim) {
           alert("Isi NIM dulu!");
           return;
         }
+
         if (scannedNIMs.has(nim)) {
-          showToast("warning", "⚠", nama || nim, "Sudah tercatat sebelumnya!");
+          showToast("warning", "⚠", nim, "Sudah tercatat sebelumnya!");
           return;
         }
 
-        scannedNIMs.add(nim);
-        addLog(nim, nama, "", keterangan);
-        sendToSheets(nim, nama, "", keterangan);
+        // Lookup nama & divisi dari Apps Script
+        const anggota = await lookupNIM(nim);
+        if (!anggota) {
+          alert(
+            `NIM ${nim} tidak terdaftar.\nSilakan periksa kembali NIM anggota.`,
+          );
+          return;
+        }
 
-        const icons = { Hadir: "✓", Izin: "📋", Sakit: "🤒" };
+        const { nama, divisi } = anggota;
+
+        scannedNIMs.add(nim);
+        addLog(nim, nama, divisi, keterangan);
+        sendToSheets(nim, nama, divisi, keterangan);
+
+        const icons = { HADIR: "✓", IZIN: "📋", SAKIT: "🤒" };
+        const labels = { HADIR: "Hadir", IZIN: "Izin", SAKIT: "Sakit" };
         showToast(
           "success",
           icons[keterangan] || "✓",
-          nama || nim,
-          `${keterangan} · ${agendaName}`,
+          nama,
+          `${labels[keterangan]} · ${agendaName}`,
         );
 
-        // Reset input
+        // Reset
         document.getElementById("manualNim").value = "";
-        document.getElementById("manualNama").value = "";
+        const infoEl = document.getElementById("manualInfo");
+        infoEl.style.display = "none";
+        infoEl.style.background = "";
+        infoEl.style.borderColor = "";
+        infoEl.style.color = "";
 
         if (navigator.vibrate) navigator.vibrate(40);
       }
@@ -1513,24 +1588,32 @@
             action: "import",
             bulk: JSON.stringify(bulk),
           });
-          await fetch(`${WEB_APP_URL}?${params.toString()}`, {
-            method: "GET",
-            mode: "no-cors",
-            redirect: "follow",
-          });
+          // Pakai fetch biasa agar bisa baca response dari Apps Script
+          const res = await fetch(`${WEB_APP_URL}?${params.toString()}`);
+          const json = await res.json();
 
-          status.className = "status-bar success";
-          status.textContent = `✓ ${bulk.length} data berhasil dikirim — agenda "${agenda}" (${tanggalFormatted})`;
-          document.getElementById("importData").value = "";
+          if (json.status === "ok") {
+            status.className = "status-bar success";
+            status.textContent = `✓ ${json.berhasil} data berhasil masuk — agenda "${agenda}" (${tanggalFormatted})${json.dilewati > 0 ? `, ${json.dilewati} dilewati (duplikat/tidak terdaftar)` : ""}`;
+            document.getElementById("importData").value = "";
 
-          // Tampilkan warning NIM tidak valid jika ada
-          if (errors.length > 0) {
-            errBox.style.display = "block";
-            errBox.innerHTML = `⚠ ${errors.length} baris dilewati:<br>${errors.join("<br>")}`;
+            // Tampilkan NIM tidak ditemukan dari server
+            const allErrors = [
+              ...errors,
+              ...(json.nimTidakDitemukan || []).map(
+                (n) => `NIM ${n}: tidak ditemukan di sheet ANGGOTA`,
+              ),
+            ];
+            if (allErrors.length > 0) {
+              errBox.style.display = "block";
+              errBox.innerHTML = `⚠ ${allErrors.length} baris bermasalah:<br>${allErrors.join("<br>")}`;
+            }
+          } else {
+            throw new Error(json.message || "Gagal");
           }
         } catch (err) {
           status.className = "status-bar error";
-          status.textContent = "✗ Gagal: " + err.message;
+          status.textContent = "✗ Gagal kirim: " + err.message;
         } finally {
           btn.disabled = false;
         }
@@ -1732,8 +1815,8 @@
         }
 
         scannedNIMs.add(nim);
-        addLog(nim, nama, divisi, "Hadir");
-        sendToSheets(nim, nama, divisi, "Hadir");
+        addLog(nim, nama, divisi, "HADIR");
+        sendToSheets(nim, nama, divisi, "HADIR");
         showToast(
           "success",
           "✓",
