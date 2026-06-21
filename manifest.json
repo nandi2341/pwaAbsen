@@ -1,6 +1,6 @@
 {
   "name": "Absensi QR - HIMASI",
-  "short_name": "Absen Dewasena",
+  "short_name": "Absensi Dewasena",
   "description": "Sistem absensi QR Code untuk kegiatan HIMA SI",
   "start_url": "/pwaAbsen/",
   "display": "standalone",
