@@ -16,7 +16,10 @@
     <meta name="apple-mobile-web-app-title" content="Absensi QR" />
     <link rel="apple-touch-icon" href="icons/icon-192.png" />
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+    <script
+      async
+      src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"
+    ></script>
     <link
       href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap"
       rel="stylesheet"
@@ -94,6 +97,20 @@
         opacity: 0;
         transform: scale(1.05);
         pointer-events: none;
+      }
+
+      /* Fallback preview: splash closes automatically even if external assets or JavaScript finish loading late. */
+      #splash {
+        animation: splashAutoHide 0.6s ease 2.2s forwards;
+      }
+
+      @keyframes splashAutoHide {
+        to {
+          opacity: 0;
+          transform: scale(1.05);
+          visibility: hidden;
+          pointer-events: none;
+        }
       }
 
       .splash-bg-circle {
@@ -234,7 +251,7 @@
 
       /* ── MAIN APP ── */
       #app {
-        display: none;
+        display: flex;
         min-height: 100dvh;
         flex-direction: column;
       }
@@ -1061,7 +1078,7 @@
                 <input
                   type="text"
                   id="agendaName"
-                  placeholder="Contoh: RAPAT - Pleno #3"
+                  placeholder="Contoh: Pleno #3, Rapat Koordinasi"
                 />
               </div>
               <div class="field">
@@ -1110,7 +1127,7 @@
               <li>Isi nama agenda sesuai kegiatan</li>
               <li>Klik "Mulai Scan" dan izinkan akses kamera</li>
               <li>Arahkan kamera ke QR Code di ID Card anggota</li>
-              <li>Setelah selesai, klik "Kirim ke Spreadsheet"</li>
+              <li>Hasil scan langsung masuk ke Spreadsheet secara real-time</li>
             </ul>
           </div>
         </div>
@@ -1359,7 +1376,7 @@
             >
               <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
             </svg>
-            Kirim Semua ke Spreadsheet
+            Perbarui Rekap Spreadsheet
           </button>
           <div id="kirimStatus" class="status-bar"></div>
 
@@ -1394,64 +1411,135 @@
       let logEntries = [];
       let agendaName = "";
       let scanCooldown = false;
+      window._kategori = "RAPAT";
+
+      const _anggotaCache = {};
+
+      function cleanAgendaName(value) {
+        let agenda = String(value || "").trim();
+        while (/^(RAPAT|PROKER)\s*[-–—]\s*/i.test(agenda)) {
+          agenda = agenda.replace(/^(RAPAT|PROKER)\s*[-–—]\s*/i, "").trim();
+        }
+        return agenda;
+      }
+
+      function statusLabel(status) {
+        return (
+          { HADIR: "Hadir", IZIN: "Izin", SAKIT: "Sakit" }[
+            String(status).toUpperCase()
+          ] || String(status || "Hadir")
+        );
+      }
+
+      function escapeHtml(value) {
+        return String(value || "").replace(/[&<>'"]/g, function (char) {
+          return {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            "'": "&#39;",
+            '"': "&quot;",
+          }[char];
+        });
+      }
+
+      async function apiRequest(params) {
+        if (!WEB_APP_URL || WEB_APP_URL.includes("GANTI_DENGAN")) {
+          throw new Error("WEB_APP_URL belum diisi di file HTML.");
+        }
+
+        const query = new URLSearchParams(params);
+        const response = await fetch(`${WEB_APP_URL}?${query.toString()}`, {
+          method: "GET",
+          redirect: "follow",
+        });
+
+        const raw = await response.text();
+        let json;
+        try {
+          json = JSON.parse(raw);
+        } catch (err) {
+          throw new Error(
+            "Respons Web App tidak valid. Pastikan URL deployment benar dan akses Web App diizinkan.",
+          );
+        }
+
+        if (!response.ok) {
+          throw new Error(
+            json.message || `Server merespons ${response.status}.`,
+          );
+        }
+
+        return json;
+      }
 
       // ── Update placeholder agenda ────────────────────────────
       function updateAgendaPlaceholder() {
-        const kat = document.getElementById("agendaKategori").value;
+        const kategori = document.getElementById("agendaKategori").value;
         const input = document.getElementById("agendaName");
-        if (kat === "RAPAT") {
-          input.placeholder = "Contoh: RAPAT - Pleno #3";
-        } else {
-          input.placeholder = "Contoh: PROKER - SI Berbagi 2026";
-        }
+        input.placeholder =
+          kategori === "RAPAT"
+            ? "Contoh: Pleno #3, Rapat Koordinasi"
+            : "Contoh: Study Club, SI Berbagi 2026";
       }
 
-      // ── Input Manual Izin/Sakit/Hadir ────────────────────────
-      // Cache data anggota dari Apps Script (lookup NIM)
-      const _anggotaCache = {};
-
+      // ── Lookup NIM ───────────────────────────────────────────
       async function lookupNIM(nim) {
-        if (_anggotaCache[nim]) return _anggotaCache[nim];
+        const key = String(nim || "").trim();
+        if (!key) return null;
+        if (_anggotaCache[key]) return _anggotaCache[key];
+
         try {
-          const params = new URLSearchParams({ action: "lookup", nim });
-          const res = await fetch(`${WEB_APP_URL}?${params.toString()}`);
-          const json = await res.json();
+          const json = await apiRequest({ action: "lookup", nim: key });
           if (json.status === "ok" && json.data) {
-            _anggotaCache[nim] = json.data;
+            _anggotaCache[key] = json.data;
             return json.data;
           }
           return null;
-        } catch {
+        } catch (err) {
+          console.warn("Lookup NIM gagal:", err);
           return null;
         }
       }
 
-      // Preview info anggota saat NIM diketik (debounce 600ms)
+      function resetManualInfo() {
+        const infoEl = document.getElementById("manualInfo");
+        infoEl.style.display = "none";
+        infoEl.style.background = "";
+        infoEl.style.borderColor = "";
+        infoEl.style.color = "";
+      }
+
+      // ── Input Manual Hadir / Izin / Sakit ─────────────────────
       let _nimDebounce = null;
       document.addEventListener("DOMContentLoaded", () => {
+        updateAgendaPlaceholder();
+
         const nimInput = document.getElementById("manualNim");
-        if (nimInput) {
-          nimInput.addEventListener("input", () => {
-            clearTimeout(_nimDebounce);
+        if (!nimInput) return;
+
+        nimInput.addEventListener("input", () => {
+          clearTimeout(_nimDebounce);
+          resetManualInfo();
+
+          _nimDebounce = setTimeout(async () => {
+            const nim = nimInput.value.trim();
+            if (!nim) return;
+
+            const data = await lookupNIM(nim);
             const infoEl = document.getElementById("manualInfo");
-            infoEl.style.display = "none";
-            _nimDebounce = setTimeout(async () => {
-              const nim = nimInput.value.trim();
-              if (!nim) return;
-              const data = await lookupNIM(nim);
-              if (data) {
-                infoEl.style.display = "block";
-                infoEl.textContent = `✓ ${data.nama} · ${data.divisi}`;
-              } else {
-                infoEl.style.display = "block";
-                infoEl.style.background = "#FCE8E6";
-                infoEl.style.borderColor = "#D93025";
-                infoEl.style.color = "#D93025";
-                infoEl.textContent = "NIM tidak ditemukan di data anggota";
-              }
-            }, 600);
-          });
-        }
+            infoEl.style.display = "block";
+
+            if (data) {
+              infoEl.textContent = `✓ ${data.nama} · ${data.divisi}`;
+            } else {
+              infoEl.style.background = "#FCE8E6";
+              infoEl.style.borderColor = "#D93025";
+              infoEl.style.color = "#D93025";
+              infoEl.textContent = "NIM tidak ditemukan di data anggota";
+            }
+          }, 600);
+        });
       });
 
       async function inputManual(keterangan) {
@@ -1461,55 +1549,19 @@
           return;
         }
 
-        if (scannedNIMs.has(nim)) {
-          showToast("warning", "⚠", nim, "Sudah tercatat sebelumnya!");
-          return;
+        const saved = await catatKehadiran(nim, keterangan, true);
+        if (saved) {
+          document.getElementById("manualNim").value = "";
+          resetManualInfo();
+          if (navigator.vibrate) navigator.vibrate(40);
         }
-
-        // Lookup nama & divisi dari Apps Script
-        const anggota = await lookupNIM(nim);
-        if (!anggota) {
-          alert(
-            `NIM ${nim} tidak terdaftar.\nSilakan periksa kembali NIM anggota.`,
-          );
-          return;
-        }
-
-        const { nama, divisi } = anggota;
-
-        scannedNIMs.add(nim);
-        addLog(nim, nama, divisi, keterangan);
-        sendToSheets(nim, nama, divisi, keterangan);
-
-        const icons = { HADIR: "✓", IZIN: "📋", SAKIT: "🤒" };
-        const labels = { HADIR: "Hadir", IZIN: "Izin", SAKIT: "Sakit" };
-        showToast(
-          "success",
-          icons[keterangan] || "✓",
-          nama,
-          `${labels[keterangan]} · ${agendaName}`,
-        );
-
-        // Reset
-        document.getElementById("manualNim").value = "";
-        const infoEl = document.getElementById("manualInfo");
-        infoEl.style.display = "none";
-        infoEl.style.background = "";
-        infoEl.style.borderColor = "";
-        infoEl.style.color = "";
-
-        if (navigator.vibrate) navigator.vibrate(40);
       }
 
-      // ── Import Historis ───────────────────────────────────────
+      // ── Import data historis ──────────────────────────────────
       async function importHistoris() {
-        if (!WEB_APP_URL || WEB_APP_URL.includes("GANTI_DENGAN")) {
-          alert("WEB_APP_URL belum diisi!");
-          return;
-        }
-
         const kategori = document.getElementById("importKategori").value;
-        const agenda = document.getElementById("importAgenda").value.trim();
+        const agendaRaw = document.getElementById("importAgenda").value.trim();
+        const agenda = cleanAgendaName(agendaRaw);
         const tanggal = document.getElementById("importTanggal").value;
         const raw = document.getElementById("importData").value.trim();
 
@@ -1526,9 +1578,8 @@
           return;
         }
 
-        // Format tanggal dari YYYY-MM-DD ke DD/MM/YYYY
-        const [y, m, d] = tanggal.split("-");
-        const tanggalFormatted = `${d}/${m}/${y}`;
+        const [year, month, day] = tanggal.split("-");
+        const tanggalFormatted = `${day}/${month}/${year}`;
 
         const btn = document.getElementById("btnImport");
         const status = document.getElementById("importStatus");
@@ -1536,38 +1587,36 @@
         btn.disabled = true;
         status.style.display = "block";
         status.className = "status-bar warning";
-        status.textContent = "⏳ Memproses...";
+        status.textContent = "⏳ Memproses data...";
         errBox.style.display = "none";
 
-        // Parse: NIM,STATUS per baris
         const lines = raw
           .split("\n")
-          .map((l) => l.trim())
-          .filter((l) => l);
+          .map((line) => line.trim())
+          .filter(Boolean);
         const validStatus = ["HADIR", "IZIN", "SAKIT"];
-
         const bulk = [];
-        const errors = [];
+        const localErrors = [];
 
-        lines.forEach((line, i) => {
-          const parts = line.split(",").map((p) => p.trim());
+        lines.forEach((line, index) => {
+          const parts = line.split(",").map((part) => part.trim());
           const nim = parts[0] || "";
-          const ket = (parts[1] || "HADIR").toUpperCase();
+          const keterangan = (parts[1] || "HADIR").toUpperCase();
 
           if (!nim) {
-            errors.push(`Baris ${i + 1}: NIM kosong — dilewati`);
+            localErrors.push(`Baris ${index + 1}: NIM kosong`);
             return;
           }
-          if (!validStatus.includes(ket)) {
-            errors.push(
-              `Baris ${i + 1} (${nim}): status "${ket}" tidak valid — gunakan HADIR/IZIN/SAKIT`,
+          if (!validStatus.includes(keterangan)) {
+            localErrors.push(
+              `Baris ${index + 1} (${nim}): status harus HADIR, IZIN, atau SAKIT`,
             );
             return;
           }
 
           bulk.push({
             nim,
-            keterangan: ket,
+            keterangan,
             tanggal: tanggalFormatted,
             agenda,
             kategori,
@@ -1576,97 +1625,107 @@
 
         if (bulk.length === 0) {
           status.className = "status-bar error";
-          status.textContent = "✗ Tidak ada data valid!";
+          status.textContent = "✗ Tidak ada data yang dapat diproses.";
           btn.disabled = false;
           return;
         }
 
-        status.textContent = `⏳ Mengirim ${bulk.length} data ke Spreadsheet...`;
-
         try {
-          const params = new URLSearchParams({
+          status.textContent = `⏳ Mengirim ${bulk.length} data ke Spreadsheet...`;
+          const json = await apiRequest({
             action: "import",
             bulk: JSON.stringify(bulk),
           });
-          // Pakai fetch biasa agar bisa baca response dari Apps Script
-          const res = await fetch(`${WEB_APP_URL}?${params.toString()}`);
-          const json = await res.json();
+          if (json.status !== "ok")
+            throw new Error(json.message || "Import gagal.");
 
-          if (json.status === "ok") {
+          const serverErrors = [
+            ...(json.nimTidakDitemukan || []).map(
+              (nim) => `NIM ${nim}: tidak terdaftar di sheet ANGGOTA`,
+            ),
+            ...(json.nimDuplikat || []).map(
+              (nim) => `NIM ${nim}: sudah tercatat pada agenda ini`,
+            ),
+            ...(json.barisTidakValid || []).map(
+              (row) => `Baris ${row}: format data tidak valid`,
+            ),
+          ];
+          const allErrors = [...localErrors, ...serverErrors];
+
+          if (json.berhasil > 0) {
             status.className = "status-bar success";
-            status.textContent = `✓ ${json.berhasil} data berhasil masuk — agenda "${agenda}" (${tanggalFormatted})${json.dilewati > 0 ? `, ${json.dilewati} dilewati (duplikat/tidak terdaftar)` : ""}`;
+            status.textContent = `✓ ${json.berhasil} data berhasil masuk — agenda "${agenda}" (${tanggalFormatted})${json.dilewati > 0 ? `, ${json.dilewati} data dilewati` : ""}.`;
             document.getElementById("importData").value = "";
-
-            // Tampilkan NIM tidak ditemukan dari server
-            const allErrors = [
-              ...errors,
-              ...(json.nimTidakDitemukan || []).map(
-                (n) => `NIM ${n}: tidak ditemukan di sheet ANGGOTA`,
-              ),
-            ];
-            if (allErrors.length > 0) {
-              errBox.style.display = "block";
-              errBox.innerHTML = `⚠ ${allErrors.length} baris bermasalah:<br>${allErrors.join("<br>")}`;
-            }
           } else {
-            throw new Error(json.message || "Gagal");
+            status.className = "status-bar error";
+            status.textContent =
+              "✗ Tidak ada data yang diimpor. Periksa NIM dan data yang dimasukkan.";
+          }
+
+          if (allErrors.length > 0) {
+            errBox.style.display = "block";
+            errBox.innerHTML = `⚠ ${allErrors.length} data bermasalah:<br>${allErrors.map(escapeHtml).join("<br>")}`;
+          }
+
+          const invalidNim = json.nimTidakDitemukan || [];
+          if (invalidNim.length > 0) {
+            alert(
+              `NIM tidak terdaftar di sheet ANGGOTA:\n${invalidNim.join("\n")}`,
+            );
           }
         } catch (err) {
           status.className = "status-bar error";
-          status.textContent = "✗ Gagal kirim: " + err.message;
+          status.textContent = `✗ Gagal kirim: ${err.message}`;
         } finally {
           btn.disabled = false;
         }
       }
 
-      // ── Splash Screen ─────────────────────────────────────────
-      window.addEventListener("load", () => {
-        // Set default tanggal import ke hari ini
+      // ── Splash Screen / initial state ─────────────────────────
+      // Do not wait for window.load here. In file previews, external assets may load slowly
+      // and previously kept the splash screen visible indefinitely.
+      document.addEventListener("DOMContentLoaded", () => {
         const today = new Date().toISOString().split("T")[0];
-        document.getElementById("importTanggal").value = today;
+        const importTanggal = document.getElementById("importTanggal");
+        if (importTanggal && !importTanggal.value) importTanggal.value = today;
 
         setTimeout(() => {
-          document.getElementById("splash").classList.add("hide");
-          setTimeout(() => {
-            document.getElementById("splash").style.display = "none";
-            document.getElementById("app").classList.add("show");
-          }, 600);
+          const splash = document.getElementById("splash");
+          if (splash) splash.classList.add("hide");
         }, 2200);
       });
 
-      // ── QR Parser ────────────────────────────────────────────
+      // ── QR Parser ─────────────────────────────────────────────
       function parseQR(raw) {
-        raw = raw.trim();
-        const fmt = document.getElementById("qrFormat").value;
+        raw = String(raw || "").trim();
+        const format = document.getElementById("qrFormat").value;
 
-        if (fmt === "json") {
+        if (format === "json") {
           try {
             const obj = JSON.parse(raw);
             return {
-              nim: obj.nim || obj.NIM || raw,
+              nim: obj.nim || obj.NIM || "",
               nama: obj.nama || obj.NAMA || "",
               divisi: obj.divisi || obj.DIVISI || "",
             };
-          } catch {
+          } catch (err) {
             return { nim: raw, nama: "", divisi: "" };
           }
         }
 
-        if (fmt === "nim_nama") {
+        if (format === "nim_nama") {
           const parts = raw.split("|");
-          if (parts.length >= 2)
-            return {
-              nim: parts[0].trim(),
-              nama: parts[1].trim(),
-              divisi: (parts[2] || "").trim(),
-            };
-          return { nim: raw, nama: "", divisi: "" };
+          return {
+            nim: (parts[0] || "").trim(),
+            nama: (parts[1] || "").trim(),
+            divisi: (parts[2] || "").trim(),
+          };
         }
 
         return { nim: raw, nama: "", divisi: "" };
       }
 
-      // ── Toast ────────────────────────────────────────────────
+      // ── Toast ─────────────────────────────────────────────────
       function showToast(type, icon, name, sub) {
         const toast = document.getElementById("toast");
         toast.className = `toast ${type}`;
@@ -1674,182 +1733,233 @@
         document.getElementById("toastName").textContent = name;
         document.getElementById("toastSub").textContent = sub;
         toast.classList.add("show");
-        setTimeout(() => toast.classList.remove("show"), 3000);
+        setTimeout(() => toast.classList.remove("show"), 3200);
       }
 
-      // ── Log ──────────────────────────────────────────────────
+      // ── Log ───────────────────────────────────────────────────
       function addLog(nim, nama, divisi, keterangan) {
-        keterangan = keterangan || "Hadir";
+        const status = String(keterangan || "HADIR").toUpperCase();
         const now = new Date();
         const timeStr = now.toLocaleTimeString("id-ID", {
           hour: "2-digit",
           minute: "2-digit",
           second: "2-digit",
         });
-        logEntries.unshift({ nim, nama, divisi, keterangan, time: timeStr });
+        logEntries.unshift({
+          nim,
+          nama,
+          divisi,
+          keterangan: status,
+          time: timeStr,
+        });
 
         const list = document.getElementById("logList");
         if (list.querySelector(".empty-state")) list.innerHTML = "";
 
-        const ketColor = {
-          Hadir: "background:#E6F4EA;color:#0F9D58",
-          Izin: "background:#E3F2FD;color:#1565C0",
-          Sakit: "background:#FEF7E0;color:#7A5300",
+        const colors = {
+          HADIR: {
+            style: "background:#E6F4EA;color:#0F9D58",
+            border: "#0F9D58",
+          },
+          IZIN: {
+            style: "background:#E3F2FD;color:#1565C0",
+            border: "#1565C0",
+          },
+          SAKIT: {
+            style: "background:#FEF7E0;color:#7A5300",
+            border: "#F9AB00",
+          },
         };
-        const ketStyle = ketColor[keterangan] || ketColor["Hadir"];
-        const borderColor = {
-          Hadir: "var(--blue-mid)",
-          Izin: "#1565C0",
-          Sakit: "#F9AB00",
-        };
+        const color = colors[status] || colors.HADIR;
 
         const item = document.createElement("div");
         item.className = "log-item";
-        item.style.borderLeftColor =
-          borderColor[keterangan] || "var(--blue-mid)";
+        item.style.borderLeftColor = color.border;
         item.innerHTML = `
       <span class="log-num">#${logEntries.length}</span>
       <div class="log-info">
-        <div class="log-name">${nama || "—"}</div>
-        <div class="log-meta">${nim}${divisi ? " · " + divisi : ""}</div>
+        <div class="log-name">${escapeHtml(nama || "—")}</div>
+        <div class="log-meta">${escapeHtml(nim)}${divisi ? " · " + escapeHtml(divisi) : ""}</div>
       </div>
-      <span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;font-family:'DM Mono',monospace;${ketStyle}">${keterangan}</span>
+      <span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;font-family:'DM Mono',monospace;${color.style}">${statusLabel(status)}</span>
       <span class="log-time">${timeStr}</span>
     `;
+
         list.insertBefore(item, list.firstChild);
         document.getElementById("logCount").textContent =
           `${logEntries.length} orang`;
       }
 
-      // ── Kirim realtime ───────────────────────────────────────
-      function sendToSheets(nim, nama, divisi, keterangan) {
-        if (!WEB_APP_URL || WEB_APP_URL.includes("GANTI_DENGAN")) return;
-        keterangan = keterangan || "HADIR";
+      // ── Kirim absensi real-time ───────────────────────────────
+      async function sendToSheets(nim, nama, divisi, keterangan) {
         const now = new Date();
-        const params = new URLSearchParams({
+        return apiRequest({
           action: "absen",
           nim,
           nama,
           divisi,
           keterangan,
           agenda: agendaName,
-          kategori: window._kategori || "RAPAT",
+          kategori: window._kategori,
           tanggal: now.toLocaleDateString("id-ID"),
           waktu: now.toLocaleTimeString("id-ID"),
         });
-        fetch(`${WEB_APP_URL}?${params.toString()}`, {
-          method: "GET",
-          mode: "no-cors",
-          redirect: "follow",
-        }).catch((err) => console.warn("Gagal kirim realtime:", err));
       }
 
-      // ── Kirim semua (bulk) ───────────────────────────────────
-      async function kirimSemuaKeSheets() {
-        if (!WEB_APP_URL || WEB_APP_URL.includes("GANTI_DENGAN")) {
-          alert("WEB_APP_URL belum diisi di kode!");
-          return;
-        }
-        if (logEntries.length === 0) {
-          alert("Belum ada data absensi!");
-          return;
+      async function catatKehadiran(nimInput, keterangan, showInvalidPopup) {
+        const nim = String(nimInput || "").trim();
+        if (!nim) return false;
+
+        if (scannedNIMs.has(nim)) {
+          showToast("warning", "⚠", nim, "Sudah tercatat pada sesi ini.");
+          return false;
         }
 
+        const anggota = await lookupNIM(nim);
+        if (!anggota) {
+          showToast(
+            "error",
+            "✕",
+            `NIM ${nim}`,
+            "NIM tidak terdaftar di data anggota.",
+          );
+          if (showInvalidPopup)
+            alert(
+              `NIM ${nim} tidak terdaftar.\nSilakan periksa kembali NIM anggota.`,
+            );
+          return false;
+        }
+
+        try {
+          const json = await sendToSheets(
+            nim,
+            anggota.nama,
+            anggota.divisi,
+            keterangan,
+          );
+
+          if (json.status === "duplicate") {
+            scannedNIMs.add(nim);
+            showToast(
+              "warning",
+              "⚠",
+              anggota.nama,
+              "Sudah tercatat pada agenda ini.",
+            );
+            return false;
+          }
+          if (json.status === "not_found") {
+            showToast(
+              "error",
+              "✕",
+              `NIM ${nim}`,
+              json.message || "NIM tidak terdaftar.",
+            );
+            if (showInvalidPopup)
+              alert(json.message || `NIM ${nim} tidak terdaftar.`);
+            return false;
+          }
+          if (json.status !== "ok")
+            throw new Error(json.message || "Data gagal disimpan.");
+
+          const data = json.data || anggota;
+          scannedNIMs.add(nim);
+          addLog(
+            nim,
+            data.nama || anggota.nama,
+            data.divisi || anggota.divisi,
+            keterangan,
+          );
+
+          const icons = { HADIR: "✓", IZIN: "📋", SAKIT: "🤒" };
+          showToast(
+            "success",
+            icons[String(keterangan).toUpperCase()] || "✓",
+            data.nama || anggota.nama,
+            `${statusLabel(keterangan)} · ${window._kategori} • ${agendaName}`,
+          );
+          return true;
+        } catch (err) {
+          showToast("error", "✕", "Gagal menyimpan absensi", err.message);
+          return false;
+        }
+      }
+
+      // Tombol ini tidak lagi mengirim ulang seluruh log karena scan sudah masuk real-time.
+      async function kirimSemuaKeSheets() {
         const btn = document.getElementById("btnKirim");
         const status = document.getElementById("kirimStatus");
         btn.disabled = true;
         status.style.display = "block";
         status.className = "status-bar warning";
-        status.textContent = `⏳ Mengirim ${logEntries.length} data...`;
+        status.textContent = "⏳ Memperbarui rekap...";
 
-        let berhasil = 0,
-          gagal = 0;
-
-        for (const entry of logEntries) {
-          try {
-            const params = new URLSearchParams({
-              action: "absen",
-              nim: entry.nim,
-              nama: entry.nama || "",
-              divisi: entry.divisi || "",
-              keterangan: entry.keterangan || "HADIR",
-              agenda: agendaName,
-              kategori: window._kategori || "RAPAT",
-              waktu: entry.time,
-              tanggal: new Date().toLocaleDateString("id-ID"),
-            });
-            await fetch(`${WEB_APP_URL}?${params.toString()}`, {
-              method: "GET",
-              mode: "no-cors",
-              redirect: "follow",
-            });
-            berhasil++;
-            status.textContent = `⏳ Mengirim... ${berhasil}/${logEntries.length}`;
-            await new Promise((r) => setTimeout(r, 300));
-          } catch {
-            gagal++;
-          }
+        try {
+          const json = await apiRequest({ action: "rekap" });
+          if (json.status !== "ok")
+            throw new Error(json.message || "Rekap gagal diperbarui.");
+          status.className = "status-bar success";
+          status.textContent = "✓ Rekap Spreadsheet berhasil diperbarui.";
+        } catch (err) {
+          status.className = "status-bar error";
+          status.textContent = `✗ Gagal memperbarui rekap: ${err.message}`;
+        } finally {
+          btn.disabled = false;
         }
-
-        status.className =
-          gagal === 0 ? "status-bar success" : "status-bar error";
-        status.textContent =
-          gagal === 0
-            ? `✓ ${berhasil} data berhasil dikirim ke Spreadsheet!`
-            : `⚠ ${berhasil} berhasil, ${gagal} gagal.`;
-
-        btn.disabled = false;
       }
 
-      // ── Scan success ─────────────────────────────────────────
-      function onScanSuccess(decodedText) {
+      // ── Scan success ──────────────────────────────────────────
+      async function onScanSuccess(decodedText) {
         if (scanCooldown) return;
         scanCooldown = true;
-        setTimeout(() => (scanCooldown = false), 2000);
+        setTimeout(() => {
+          scanCooldown = false;
+        }, 1800);
 
-        const { nim, nama, divisi } = parseQR(decodedText);
-
-        if (scannedNIMs.has(nim)) {
-          showToast("warning", "⚠", nama || nim, "Sudah absen sebelumnya!");
+        const qrData = parseQR(decodedText);
+        const nim = String(qrData.nim || "").trim();
+        if (!nim) {
+          showToast(
+            "error",
+            "✕",
+            "QR tidak valid",
+            "QR harus memuat NIM anggota.",
+          );
           return;
         }
 
-        scannedNIMs.add(nim);
-        addLog(nim, nama, divisi, "HADIR");
-        sendToSheets(nim, nama, divisi, "HADIR");
-        showToast(
-          "success",
-          "✓",
-          nama || nim,
-          `${nim}${divisi ? " · " + divisi : ""} · ${agendaName}`,
-        );
-        if (navigator.vibrate) navigator.vibrate(60);
+        const saved = await catatKehadiran(nim, "HADIR", false);
+        if (saved && navigator.vibrate) navigator.vibrate(60);
       }
 
-      // ── Start scanner ────────────────────────────────────────
+      // ── Mulai / selesai scanner ────────────────────────────────
       function startScanner() {
+        if (typeof Html5Qrcode === "undefined") {
+          alert(
+            "Komponen kamera masih dimuat. Tunggu beberapa detik, lalu coba mulai scan kembali.",
+          );
+          return;
+        }
+
         const kategori = document.getElementById("agendaKategori").value;
         const namaInput = document.getElementById("agendaName").value.trim();
-        if (!namaInput) {
+        const agenda = cleanAgendaName(namaInput);
+
+        if (!agenda) {
           alert("Isi nama agenda dulu!");
           return;
         }
 
-        // Auto-tambah prefix jika belum ada
-        const upperInput = namaInput.toUpperCase();
-        if (
-          !upperInput.startsWith("RAPAT") &&
-          !upperInput.startsWith("PROKER")
-        ) {
-          agendaName = kategori + " - " + namaInput;
-        } else {
-          agendaName = namaInput;
-        }
+        window._kategori = kategori;
+        agendaName = agenda;
+        scannedNIMs = new Set();
+        logEntries = [];
 
         document.getElementById("setup-section").style.display = "none";
+        document.getElementById("import-section").style.display = "none";
         document.getElementById("scanner-section").style.display = "block";
         document.getElementById("agendaBadge").textContent =
-          (window._kategori || "RAPAT") + " · " + agendaName;
+          `${kategori} • ${agendaName}`;
         document.getElementById("statusDot").classList.add("active");
         document.getElementById("statusLabel").textContent = "Live";
 
@@ -1867,40 +1977,41 @@
             () => {},
           )
           .catch((err) => {
-            alert("Tidak bisa akses kamera: " + err);
+            alert(`Tidak bisa akses kamera: ${err}`);
             stopScanner();
           });
       }
 
-      // ── Stop scanner ─────────────────────────────────────────
       function stopScanner() {
         const resetUI = () => {
           document.getElementById("setup-section").style.display = "block";
+          document.getElementById("import-section").style.display = "block";
           document.getElementById("scanner-section").style.display = "none";
           document.getElementById("statusDot").classList.remove("active");
           document.getElementById("statusLabel").textContent = "Siap";
           document.getElementById("kirimStatus").style.display = "none";
+          resetManualInfo();
           html5QrCode = null;
         };
 
-        if (html5QrCode) {
-          try {
-            const state = html5QrCode.getState();
-            // 2 = SCANNING, 3 = PAUSED — perlu di-stop dulu
-            if (state === 2 || state === 3) {
-              html5QrCode.stop().then(resetUI).catch(resetUI);
-            } else {
-              resetUI();
-            }
-          } catch (e) {
+        if (!html5QrCode) {
+          resetUI();
+          return;
+        }
+
+        try {
+          const state = html5QrCode.getState();
+          if (state === 2 || state === 3) {
+            html5QrCode.stop().then(resetUI).catch(resetUI);
+          } else {
             resetUI();
           }
-        } else {
+        } catch (err) {
           resetUI();
         }
       }
 
-      // ── Service Worker ───────────────────────────────────────
+      // ── Service Worker ─────────────────────────────────────────
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", () => {
           navigator.serviceWorker
