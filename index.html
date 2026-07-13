@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, user-scalable=no"
     />
-    <title>Absensi QR — HIMA SI Dewasena</title>
+    <title>Absensi QR — HIMA SI Dewasena v5</title>
 
     <!-- PWA -->
     <link rel="manifest" href="manifest.json" />
@@ -1424,6 +1424,12 @@
         return agenda;
       }
 
+      function normalizeNim(value) {
+        return String(value || "")
+          .normalize("NFKC")
+          .replace(/[^0-9]/g, "");
+      }
+
       function statusLabel(status) {
         return (
           { HADIR: "Hadir", IZIN: "Izin", SAKIT: "Sakit" }[
@@ -1487,7 +1493,7 @@
       function hydrateAnggotaCache(members) {
         Object.keys(_anggotaCache).forEach((key) => delete _anggotaCache[key]);
         (Array.isArray(members) ? members : []).forEach((member) => {
-          const nim = String(member.nim || "").trim();
+          const nim = normalizeNim(member.nim);
           if (!nim) return;
           _anggotaCache[nim] = {
             nim,
@@ -1498,20 +1504,32 @@
       }
 
       async function lookupNIM(nim) {
-        const key = String(nim || "").trim();
-        if (!key) return null;
-        if (_anggotaCache[key]) return _anggotaCache[key];
+        const key = normalizeNim(nim);
+        if (!key) return { status: "empty", data: null };
+        if (_anggotaCache[key])
+          return { status: "ok", data: _anggotaCache[key], source: "cache" };
 
-        try {
-          const json = await apiRequest({ action: "lookup", nim: key });
-          if (json.status === "ok" && json.data) {
-            _anggotaCache[key] = json.data;
-            return json.data;
-          }
-        } catch (err) {
-          console.warn("Lookup NIM gagal:", err);
+        const json = await apiRequest({ action: "lookup", nim: key });
+
+        if (json.status === "ok" && json.data) {
+          const normalizedData = {
+            nim: normalizeNim(json.data.nim || key),
+            nama: String(json.data.nama || "").trim(),
+            divisi: String(json.data.divisi || "").trim(),
+          };
+          _anggotaCache[key] = normalizedData;
+          return { status: "ok", data: normalizedData, source: "server" };
         }
-        return null;
+
+        if (json.status === "not_found") {
+          return {
+            status: "not_found",
+            data: null,
+            message: json.message || `NIM ${key} tidak ditemukan.`,
+          };
+        }
+
+        throw new Error(json.message || "Gagal memeriksa NIM.");
       }
 
       function resetManualInfo() {
@@ -1524,6 +1542,7 @@
 
       // ── Input manual ───────────────────────────────────────────
       let _nimDebounce = null;
+      let _nimLookupToken = 0;
       document.addEventListener("DOMContentLoaded", () => {
         updateAgendaPlaceholder();
 
@@ -1533,23 +1552,50 @@
             clearTimeout(_nimDebounce);
             resetManualInfo();
 
+            const lookupToken = ++_nimLookupToken;
+
             _nimDebounce = setTimeout(async () => {
-              const nim = nimInput.value.trim();
+              const nim = normalizeNim(nimInput.value);
               if (!nim) return;
 
-              const data = await lookupNIM(nim);
               const infoEl = document.getElementById("manualInfo");
-              infoEl.style.display = "block";
 
-              if (data) {
-                infoEl.textContent = `✓ ${data.nama} · ${data.divisi}`;
-              } else {
-                infoEl.style.background = "#FCE8E6";
-                infoEl.style.borderColor = "#D93025";
-                infoEl.style.color = "#D93025";
-                infoEl.textContent = "NIM tidak ditemukan di data anggota";
+              try {
+                const result = await lookupNIM(nim);
+
+                // Abaikan respons lama bila pengguna sudah mengubah NIM.
+                if (
+                  lookupToken !== _nimLookupToken ||
+                  normalizeNim(nimInput.value) !== nim
+                )
+                  return;
+
+                infoEl.style.display = "block";
+
+                if (result.status === "ok" && result.data) {
+                  infoEl.textContent = `✓ ${result.data.nama} · ${result.data.divisi}`;
+                } else if (result.status === "not_found") {
+                  infoEl.style.background = "#FCE8E6";
+                  infoEl.style.borderColor = "#D93025";
+                  infoEl.style.color = "#D93025";
+                  infoEl.textContent = "NIM tidak ditemukan di data anggota";
+                }
+              } catch (err) {
+                if (
+                  lookupToken !== _nimLookupToken ||
+                  normalizeNim(nimInput.value) !== nim
+                )
+                  return;
+
+                // Gangguan jaringan tidak boleh ditampilkan sebagai "NIM tidak ditemukan".
+                infoEl.style.display = "block";
+                infoEl.style.background = "#FEF7E0";
+                infoEl.style.borderColor = "#F9AB00";
+                infoEl.style.color = "#7A5300";
+                infoEl.textContent =
+                  "Gagal memeriksa NIM. Periksa koneksi lalu coba lagi.";
               }
-            }, 350);
+            }, 300);
           });
         }
 
@@ -1564,16 +1610,19 @@
         }, 1200);
       });
 
-      function inputManual(keterangan) {
-        const nim = document.getElementById("manualNim").value.trim();
+      async function inputManual(keterangan) {
+        const nimInput = document.getElementById("manualNim");
+        const nim = normalizeNim(nimInput.value);
+
         if (!nim) {
           alert("Isi NIM dulu!");
           return;
         }
 
-        const accepted = catatKehadiran(nim, keterangan, true);
+        const accepted = await catatKehadiran(nim, keterangan, true);
         if (accepted) {
-          document.getElementById("manualNim").value = "";
+          nimInput.value = "";
+          _nimLookupToken++;
           resetManualInfo();
           if (navigator.vibrate) navigator.vibrate(40);
         }
@@ -1622,7 +1671,7 @@
 
         lines.forEach((line, index) => {
           const parts = line.split(",").map((part) => part.trim());
-          const nim = parts[0] || "";
+          const nim = normalizeNim(parts[0]);
           const keterangan = (parts[1] || "HADIR").toUpperCase();
 
           if (!nim) {
@@ -1849,7 +1898,7 @@
         const now = new Date();
         return apiRequest({
           action: "absen",
-          nim,
+          nim: normalizeNim(nim),
           keterangan,
           agenda: agendaName,
           kategori: window._kategori,
@@ -1861,13 +1910,13 @@
       // UI dibuat optimistis: nama/log ditampilkan sebelum request selesai.
       // Bila server menolak (duplikat, NIM salah, atau jaringan gagal), log
       // otomatis dibatalkan dan pengguna menerima notifikasi error.
-      function catatKehadiran(
+      async function catatKehadiran(
         nimInput,
         keterangan,
         showInvalidPopup,
         silentDuplicate,
       ) {
-        const nim = String(nimInput || "").trim();
+        const nim = normalizeNim(nimInput);
         if (!nim) return false;
 
         if (scannedNIMs.has(nim)) {
@@ -1882,18 +1931,40 @@
           return false;
         }
 
-        const member = _anggotaCache[nim];
+        let member = _anggotaCache[nim];
+
+        // Cache normalnya sudah terisi saat agenda dimulai. Jika tidak, verifikasi
+        // ke server agar NIM valid tidak salah ditampilkan sebagai "tidak ditemukan".
         if (!member) {
-          const message = `NIM ${nim} tidak terdaftar di sheet ANGGOTA.`;
-          showToast(
-            "error",
-            "✕",
-            `NIM ${nim}`,
-            "Tidak ditemukan di data anggota.",
-          );
-          if (showInvalidPopup) alert(message);
-          return false;
+          try {
+            const lookup = await lookupNIM(nim);
+            if (lookup.status === "ok") member = lookup.data;
+            else if (lookup.status === "not_found") {
+              const message =
+                lookup.message ||
+                `NIM ${nim} tidak terdaftar di sheet ANGGOTA.`;
+              showToast(
+                "error",
+                "✕",
+                `NIM ${nim}`,
+                "Tidak ditemukan di data anggota.",
+              );
+              if (showInvalidPopup) alert(message);
+              return false;
+            }
+          } catch (err) {
+            showToast(
+              "error",
+              "✕",
+              `NIM ${nim}`,
+              "Gagal memeriksa data anggota.",
+            );
+            if (showInvalidPopup) alert(`Gagal memeriksa NIM: ${err.message}`);
+            return false;
+          }
         }
+
+        if (!member) return false;
 
         const requestSession = sessionId;
         scannedNIMs.add(nim);
@@ -1937,7 +2008,7 @@
       }
 
       // ── Scan success ──────────────────────────────────────────
-      function onScanSuccess(decodedText) {
+      async function onScanSuccess(decodedText) {
         if (scanCooldown) return;
         scanCooldown = true;
         setTimeout(() => {
@@ -1945,7 +2016,7 @@
         }, 450);
 
         const qrData = parseQR(decodedText);
-        const nim = String(qrData.nim || "").trim();
+        const nim = normalizeNim(qrData.nim);
         if (!nim) {
           showToast(
             "error",
@@ -1956,7 +2027,7 @@
           return;
         }
 
-        const accepted = catatKehadiran(nim, "HADIR", false, true);
+        const accepted = await catatKehadiran(nim, "HADIR", false, true);
         if (accepted && navigator.vibrate) navigator.vibrate(60);
       }
 
