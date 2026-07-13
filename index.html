@@ -1089,7 +1089,11 @@
                   <option value="json">JSON Object</option>
                 </select>
               </div>
-              <button class="btn btn-primary" onclick="startScanner()">
+              <button
+                class="btn btn-primary"
+                id="btnStartScanner"
+                onclick="startScanner()"
+              >
                 <svg
                   width="18"
                   height="18"
@@ -1127,7 +1131,10 @@
               <li>Isi nama agenda sesuai kegiatan</li>
               <li>Klik "Mulai Scan" dan izinkan akses kamera</li>
               <li>Arahkan kamera ke QR Code di ID Card anggota</li>
-              <li>Hasil scan langsung masuk ke Spreadsheet secara real-time</li>
+              <li>
+                Hasil scan dan rekap Spreadsheet diperbarui otomatis secara
+                real-time
+              </li>
             </ul>
           </div>
         </div>
@@ -1360,26 +1367,14 @@
             </div>
           </div>
 
-          <!-- Tombol aksi -->
-          <button
-            class="btn btn-ghost"
-            id="btnKirim"
-            onclick="kirimSemuaKeSheets()"
-            title="Gunakan setelah sesi absensi selesai"
+          <!-- Info rekap otomatis -->
+          <div
+            class="status-bar success"
+            id="rekapAutoInfo"
+            style="display: block; margin: 0"
           >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-            >
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-            </svg>
-            Perbarui Rekap Spreadsheet
-          </button>
-          <div id="kirimStatus" class="status-bar"></div>
+            ✓ Rekap Spreadsheet diperbarui otomatis saat absensi masuk.
+          </div>
 
           <div class="divider"></div>
 
@@ -1414,8 +1409,11 @@
       let sessionId = 0;
       let agendaName = "";
       let scanCooldown = false;
+      let preparingSession = false;
       window._kategori = "RAPAT";
 
+      // Cache seluruh anggota dimuat sekali saat agenda dimulai. Dengan begitu
+      // nama/divisi dan log dapat tampil langsung sebelum request selesai.
       const _anggotaCache = {};
 
       function cleanAgendaName(value) {
@@ -1455,6 +1453,7 @@
         const response = await fetch(`${WEB_APP_URL}?${query.toString()}`, {
           method: "GET",
           redirect: "follow",
+          cache: "no-store",
         });
 
         const raw = await response.text();
@@ -1472,11 +1471,10 @@
             json.message || `Server merespons ${response.status}.`,
           );
         }
-
         return json;
       }
 
-      // ── Update placeholder agenda ────────────────────────────
+      // ── Setup agenda / cache anggota ───────────────────────────
       function updateAgendaPlaceholder() {
         const kategori = document.getElementById("agendaKategori").value;
         const input = document.getElementById("agendaName");
@@ -1486,7 +1484,19 @@
             : "Contoh: Study Club, SI Berbagi 2026";
       }
 
-      // ── Lookup NIM ───────────────────────────────────────────
+      function hydrateAnggotaCache(members) {
+        Object.keys(_anggotaCache).forEach((key) => delete _anggotaCache[key]);
+        (Array.isArray(members) ? members : []).forEach((member) => {
+          const nim = String(member.nim || "").trim();
+          if (!nim) return;
+          _anggotaCache[nim] = {
+            nim,
+            nama: String(member.nama || "").trim(),
+            divisi: String(member.divisi || "").trim(),
+          };
+        });
+      }
+
       async function lookupNIM(nim) {
         const key = String(nim || "").trim();
         if (!key) return null;
@@ -1498,11 +1508,10 @@
             _anggotaCache[key] = json.data;
             return json.data;
           }
-          return null;
         } catch (err) {
           console.warn("Lookup NIM gagal:", err);
-          return null;
         }
+        return null;
       }
 
       function resetManualInfo() {
@@ -1513,47 +1522,57 @@
         infoEl.style.color = "";
       }
 
-      // ── Input Manual Hadir / Izin / Sakit ─────────────────────
+      // ── Input manual ───────────────────────────────────────────
       let _nimDebounce = null;
       document.addEventListener("DOMContentLoaded", () => {
         updateAgendaPlaceholder();
 
         const nimInput = document.getElementById("manualNim");
-        if (!nimInput) return;
+        if (nimInput) {
+          nimInput.addEventListener("input", () => {
+            clearTimeout(_nimDebounce);
+            resetManualInfo();
 
-        nimInput.addEventListener("input", () => {
-          clearTimeout(_nimDebounce);
-          resetManualInfo();
+            _nimDebounce = setTimeout(async () => {
+              const nim = nimInput.value.trim();
+              if (!nim) return;
 
-          _nimDebounce = setTimeout(async () => {
-            const nim = nimInput.value.trim();
-            if (!nim) return;
+              const data = await lookupNIM(nim);
+              const infoEl = document.getElementById("manualInfo");
+              infoEl.style.display = "block";
 
-            const data = await lookupNIM(nim);
-            const infoEl = document.getElementById("manualInfo");
-            infoEl.style.display = "block";
+              if (data) {
+                infoEl.textContent = `✓ ${data.nama} · ${data.divisi}`;
+              } else {
+                infoEl.style.background = "#FCE8E6";
+                infoEl.style.borderColor = "#D93025";
+                infoEl.style.color = "#D93025";
+                infoEl.textContent = "NIM tidak ditemukan di data anggota";
+              }
+            }, 350);
+          });
+        }
 
-            if (data) {
-              infoEl.textContent = `✓ ${data.nama} · ${data.divisi}`;
-            } else {
-              infoEl.style.background = "#FCE8E6";
-              infoEl.style.borderColor = "#D93025";
-              infoEl.style.color = "#D93025";
-              infoEl.textContent = "NIM tidak ditemukan di data anggota";
-            }
-          }, 600);
-        });
+        const today = new Date().toISOString().split("T")[0];
+        const importTanggal = document.getElementById("importTanggal");
+        if (importTanggal && !importTanggal.value) importTanggal.value = today;
+
+        // Jangan menunggu window.load karena preview dapat tertahan oleh aset eksternal.
+        setTimeout(() => {
+          const splash = document.getElementById("splash");
+          if (splash) splash.classList.add("hide");
+        }, 1200);
       });
 
-      async function inputManual(keterangan) {
+      function inputManual(keterangan) {
         const nim = document.getElementById("manualNim").value.trim();
         if (!nim) {
           alert("Isi NIM dulu!");
           return;
         }
 
-        const saved = await catatKehadiran(nim, keterangan, true);
-        if (saved) {
+        const accepted = catatKehadiran(nim, keterangan, true);
+        if (accepted) {
           document.getElementById("manualNim").value = "";
           resetManualInfo();
           if (navigator.vibrate) navigator.vibrate(40);
@@ -1590,7 +1609,7 @@
         btn.disabled = true;
         status.style.display = "block";
         status.className = "status-bar warning";
-        status.textContent = "⏳ Memproses data...";
+        status.textContent = "⏳ Memproses data dan rekap otomatis...";
         errBox.style.display = "none";
 
         const lines = raw
@@ -1616,7 +1635,6 @@
             );
             return;
           }
-
           bulk.push({
             nim,
             keterangan,
@@ -1634,7 +1652,6 @@
         }
 
         try {
-          status.textContent = `⏳ Mengirim ${bulk.length} data ke Spreadsheet...`;
           const json = await apiRequest({
             action: "import",
             bulk: JSON.stringify(bulk),
@@ -1657,7 +1674,7 @@
 
           if (json.berhasil > 0) {
             status.className = "status-bar success";
-            status.textContent = `✓ ${json.berhasil} data berhasil masuk — agenda "${agenda}" (${tanggalFormatted})${json.dilewati > 0 ? `, ${json.dilewati} data dilewati` : ""}.`;
+            status.textContent = `✓ ${json.berhasil} data berhasil masuk dan rekap otomatis diperbarui — agenda "${agenda}" (${tanggalFormatted})${json.dilewati > 0 ? `, ${json.dilewati} data dilewati` : ""}.`;
             document.getElementById("importData").value = "";
           } else {
             status.className = "status-bar error";
@@ -1683,20 +1700,6 @@
           btn.disabled = false;
         }
       }
-
-      // ── Splash Screen / initial state ─────────────────────────
-      // Do not wait for window.load here. In file previews, external assets may load slowly
-      // and previously kept the splash screen visible indefinitely.
-      document.addEventListener("DOMContentLoaded", () => {
-        const today = new Date().toISOString().split("T")[0];
-        const importTanggal = document.getElementById("importTanggal");
-        if (importTanggal && !importTanggal.value) importTanggal.value = today;
-
-        setTimeout(() => {
-          const splash = document.getElementById("splash");
-          if (splash) splash.classList.add("hide");
-        }, 2200);
-      });
 
       // ── QR Parser ─────────────────────────────────────────────
       function parseQR(raw) {
@@ -1736,19 +1739,11 @@
         document.getElementById("toastName").textContent = name;
         document.getElementById("toastSub").textContent = sub;
         toast.classList.add("show");
-        setTimeout(() => toast.classList.remove("show"), 3200);
+        setTimeout(() => toast.classList.remove("show"), 2200);
       }
 
       // ── Log ───────────────────────────────────────────────────
-      function getLogStyle(status, pending) {
-        if (pending) {
-          return {
-            style: "background:#F1F5F9;color:#475569",
-            border: "#94A3B8",
-            label: "Menyimpan...",
-          };
-        }
-
+      function getLogStyle(status) {
         const colors = {
           HADIR: {
             style: "background:#E6F4EA;color:#0F9D58",
@@ -1766,14 +1761,12 @@
             label: "Sakit",
           },
         };
-
         return colors[String(status || "HADIR").toUpperCase()] || colors.HADIR;
       }
 
       function renderLog() {
         const list = document.getElementById("logList");
         const count = document.getElementById("logCount");
-
         count.textContent = `${logEntries.length} orang`;
 
         if (!logEntries.length) {
@@ -1788,12 +1781,9 @@
 
         list.innerHTML = logEntries
           .map((entry) => {
-            const color = getLogStyle(entry.keterangan, entry.pending);
-            const label = color.label || statusLabel(entry.keterangan);
+            const color = getLogStyle(entry.keterangan);
             const name = entry.nama || `NIM ${entry.nim}`;
-            const time = entry.pending ? "..." : entry.time;
             const meta = `${escapeHtml(entry.nim)}${entry.divisi ? " · " + escapeHtml(entry.divisi) : ""}`;
-
             return `
         <div class="log-item" data-log-id="${escapeHtml(entry.id)}" style="border-left-color:${color.border}">
           <span class="log-num">#${entry.sequence}</span>
@@ -1801,18 +1791,18 @@
             <div class="log-name">${escapeHtml(name)}</div>
             <div class="log-meta">${meta}</div>
           </div>
-          <span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;font-family:'DM Mono',monospace;${color.style}">${label}</span>
-          <span class="log-time">${escapeHtml(time)}</span>
+          <span style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;font-family:'DM Mono',monospace;${color.style}">${color.label}</span>
+          <span class="log-time">${escapeHtml(entry.time)}</span>
         </div>
       `;
           })
           .join("");
       }
 
-      function addPendingLog(nim, nama, divisi, keterangan) {
+      function addOptimisticLog(nim, member, keterangan) {
         const now = new Date();
         const id = `log-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const timeStr = now.toLocaleTimeString("id-ID", {
+        const time = now.toLocaleTimeString("id-ID", {
           hour: "2-digit",
           minute: "2-digit",
           second: "2-digit",
@@ -1822,31 +1812,29 @@
           id,
           sequence: ++logSequence,
           nim,
-          nama: nama || `Memproses NIM ${nim}...`,
-          divisi: divisi || "",
+          nama: member.nama || `NIM ${nim}`,
+          divisi: member.divisi || "",
           keterangan: String(keterangan || "HADIR").toUpperCase(),
-          time: timeStr,
-          pending: true,
+          time,
         });
         renderLog();
         return id;
       }
 
-      function finalizeLog(id, data, keterangan) {
-        const entry = logEntries.find((item) => item.id === id);
-        if (!entry) return;
-
-        entry.nama = data.nama || entry.nama;
-        entry.divisi = data.divisi || entry.divisi;
-        entry.keterangan = String(
-          keterangan || entry.keterangan || "HADIR",
-        ).toUpperCase();
-        entry.pending = false;
+      function removeLog(id) {
+        logEntries = logEntries.filter((item) => item.id !== id);
         renderLog();
       }
 
-      function removeLog(id) {
-        logEntries = logEntries.filter((item) => item.id !== id);
+      function updateLogFromServer(id, data) {
+        const entry = logEntries.find((item) => item.id === id);
+        if (!entry) return;
+        entry.nama = data.nama || entry.nama;
+        entry.divisi = data.divisi || entry.divisi;
+        entry.time = data.waktu || entry.time;
+        entry.keterangan = String(
+          data.keterangan || entry.keterangan,
+        ).toUpperCase();
         renderLog();
       }
 
@@ -1856,14 +1844,12 @@
         renderLog();
       }
 
-      // ── Kirim absensi real-time ───────────────────────────────
-      async function sendToSheets(nim, nama, divisi, keterangan) {
+      // ── Kirim absensi ─────────────────────────────────────────
+      function sendToSheets(nim, keterangan) {
         const now = new Date();
         return apiRequest({
           action: "absen",
           nim,
-          nama,
-          divisi,
           keterangan,
           agenda: agendaName,
           kategori: window._kategori,
@@ -1872,134 +1858,91 @@
         });
       }
 
-      async function catatKehadiran(nimInput, keterangan, showInvalidPopup) {
+      // UI dibuat optimistis: nama/log ditampilkan sebelum request selesai.
+      // Bila server menolak (duplikat, NIM salah, atau jaringan gagal), log
+      // otomatis dibatalkan dan pengguna menerima notifikasi error.
+      function catatKehadiran(
+        nimInput,
+        keterangan,
+        showInvalidPopup,
+        silentDuplicate,
+      ) {
         const nim = String(nimInput || "").trim();
         if (!nim) return false;
 
         if (scannedNIMs.has(nim)) {
-          showToast(
-            "warning",
-            "⚠",
-            nim,
-            "Sudah tercatat atau sedang diproses pada sesi ini.",
-          );
-          return false;
-        }
-
-        // Kunci NIM dan tampilkan log lebih dulu agar hasil scan terasa instan.
-        // Validasi akhir tetap dilakukan oleh Apps Script sebelum data disimpan.
-        scannedNIMs.add(nim);
-        const anggotaCache = _anggotaCache[nim] || {};
-        const requestSession = sessionId;
-        const logId = addPendingLog(
-          nim,
-          anggotaCache.nama,
-          anggotaCache.divisi,
-          keterangan,
-        );
-
-        try {
-          const json = await sendToSheets(
-            nim,
-            anggotaCache.nama || "",
-            anggotaCache.divisi || "",
-            keterangan,
-          );
-
-          if (json.status === "duplicate") {
-            scannedNIMs.delete(nim);
-            if (requestSession === sessionId) removeLog(logId);
+          if (!silentDuplicate) {
             showToast(
               "warning",
               "⚠",
-              anggotaCache.nama || nim,
-              "Sudah tercatat pada agenda ini.",
+              nim,
+              "Sudah tercatat atau sedang diproses pada sesi ini.",
             );
-            return false;
-          }
-
-          if (json.status === "not_found") {
-            scannedNIMs.delete(nim);
-            if (requestSession === sessionId) removeLog(logId);
-            showToast(
-              "error",
-              "✕",
-              `NIM ${nim}`,
-              json.message || "NIM tidak terdaftar.",
-            );
-            if (showInvalidPopup)
-              alert(json.message || `NIM ${nim} tidak terdaftar.`);
-            return false;
-          }
-
-          if (json.status !== "ok") {
-            throw new Error(json.message || "Data gagal disimpan.");
-          }
-
-          const data = json.data || {
-            nim,
-            nama: anggotaCache.nama || "",
-            divisi: anggotaCache.divisi || "",
-          };
-          _anggotaCache[nim] = {
-            nim,
-            nama: data.nama || anggotaCache.nama || "",
-            divisi: data.divisi || anggotaCache.divisi || "",
-          };
-
-          if (requestSession === sessionId) {
-            finalizeLog(logId, data, keterangan);
-            const icons = { HADIR: "✓", IZIN: "📋", SAKIT: "🤒" };
-            showToast(
-              "success",
-              icons[String(keterangan).toUpperCase()] || "✓",
-              data.nama || anggotaCache.nama || nim,
-              `${statusLabel(keterangan)} · ${window._kategori} • ${agendaName}`,
-            );
-          }
-          return true;
-        } catch (err) {
-          scannedNIMs.delete(nim);
-          if (requestSession === sessionId) {
-            removeLog(logId);
-            showToast("error", "✕", "Gagal menyimpan absensi", err.message);
           }
           return false;
         }
-      }
 
-      // Tombol ini tidak lagi mengirim ulang seluruh log karena scan sudah masuk real-time.
-      async function kirimSemuaKeSheets() {
-        const btn = document.getElementById("btnKirim");
-        const status = document.getElementById("kirimStatus");
-        btn.disabled = true;
-        status.style.display = "block";
-        status.className = "status-bar warning";
-        status.textContent = "⏳ Memperbarui rekap...";
-
-        try {
-          const json = await apiRequest({ action: "rekap" });
-          if (json.status !== "ok")
-            throw new Error(json.message || "Rekap gagal diperbarui.");
-          status.className = "status-bar success";
-          status.textContent = "✓ Rekap Spreadsheet berhasil diperbarui.";
-        } catch (err) {
-          status.className = "status-bar error";
-          status.textContent = `✗ Gagal memperbarui rekap: ${err.message}`;
-        } finally {
-          btn.disabled = false;
+        const member = _anggotaCache[nim];
+        if (!member) {
+          const message = `NIM ${nim} tidak terdaftar di sheet ANGGOTA.`;
+          showToast(
+            "error",
+            "✕",
+            `NIM ${nim}`,
+            "Tidak ditemukan di data anggota.",
+          );
+          if (showInvalidPopup) alert(message);
+          return false;
         }
+
+        const requestSession = sessionId;
+        scannedNIMs.add(nim);
+        const logId = addOptimisticLog(nim, member, keterangan);
+
+        // Request dibiarkan berjalan di belakang layar agar kamera dan log tidak menunggu.
+        sendToSheets(nim, keterangan)
+          .then((json) => {
+            if (requestSession !== sessionId) return;
+
+            if (json.status === "ok") {
+              updateLogFromServer(logId, json.data || {});
+              return;
+            }
+
+            scannedNIMs.delete(nim);
+            removeLog(logId);
+
+            if (json.status === "duplicate") {
+              showToast(
+                "warning",
+                "⚠",
+                member.nama || nim,
+                "Sudah tercatat pada agenda ini.",
+              );
+              return;
+            }
+
+            const message = json.message || "Data gagal disimpan.";
+            showToast("error", "✕", member.nama || nim, message);
+            if (json.status === "not_found" && showInvalidPopup) alert(message);
+          })
+          .catch((err) => {
+            if (requestSession !== sessionId) return;
+            scannedNIMs.delete(nim);
+            removeLog(logId);
+            showToast("error", "✕", "Gagal menyimpan absensi", err.message);
+          });
+
+        return true;
       }
 
       // ── Scan success ──────────────────────────────────────────
-      async function onScanSuccess(decodedText) {
+      function onScanSuccess(decodedText) {
         if (scanCooldown) return;
         scanCooldown = true;
-        // Cooldown dipersingkat agar scan berikutnya tetap responsif,
-        // sementara NIM yang sama tetap dikunci melalui scannedNIMs.
         setTimeout(() => {
           scanCooldown = false;
-        }, 700);
+        }, 450);
 
         const qrData = parseQR(decodedText);
         const nim = String(qrData.nim || "").trim();
@@ -2013,69 +1956,100 @@
           return;
         }
 
-        const saved = await catatKehadiran(nim, "HADIR", false);
-        if (saved && navigator.vibrate) navigator.vibrate(60);
+        const accepted = catatKehadiran(nim, "HADIR", false, true);
+        if (accepted && navigator.vibrate) navigator.vibrate(60);
       }
 
       // ── Mulai / selesai scanner ────────────────────────────────
-      function startScanner() {
+      function setStartButtonState(isLoading) {
+        const btn = document.getElementById("btnStartScanner");
+        if (!btn) return;
+        if (!btn.dataset.originalHtml) btn.dataset.originalHtml = btn.innerHTML;
+        btn.disabled = isLoading;
+        btn.innerHTML = isLoading
+          ? "⏳ Menyiapkan agenda dan rekap..."
+          : btn.dataset.originalHtml;
+      }
+
+      async function startScanner() {
+        if (preparingSession) return;
         if (typeof Html5Qrcode === "undefined") {
           alert(
-            "Komponen kamera masih dimuat. Tunggu beberapa detik, lalu coba mulai scan kembali.",
+            "Komponen kamera masih dimuat. Tunggu beberapa detik, lalu coba kembali.",
           );
           return;
         }
 
         const kategori = document.getElementById("agendaKategori").value;
-        const namaInput = document.getElementById("agendaName").value.trim();
-        const agenda = cleanAgendaName(namaInput);
-
+        const agenda = cleanAgendaName(
+          document.getElementById("agendaName").value,
+        );
         if (!agenda) {
           alert("Isi nama agenda dulu!");
           return;
         }
 
-        window._kategori = kategori;
-        agendaName = agenda;
-        scannedNIMs = new Set();
-        sessionId++;
-        resetSessionLog();
+        preparingSession = true;
+        setStartButtonState(true);
 
-        document.getElementById("setup-section").style.display = "none";
-        document.getElementById("import-section").style.display = "none";
-        document.getElementById("scanner-section").style.display = "block";
-        document.getElementById("agendaBadge").textContent =
-          `${kategori} • ${agendaName}`;
-        document.getElementById("statusDot").classList.add("active");
-        document.getElementById("statusLabel").textContent = "Live";
+        try {
+          // Satu kali persiapan sebelum kamera dibuka: agenda dibuat, rekap live
+          // disiapkan, dan seluruh anggota dicache untuk respons UI instan.
+          const json = await apiRequest({
+            action: "prepare",
+            kategori,
+            agenda,
+          });
+          if (json.status !== "ok")
+            throw new Error(json.message || "Agenda gagal disiapkan.");
 
-        html5QrCode = new Html5Qrcode("reader");
-        html5QrCode
-          .start(
+          const data = json.data || {};
+          window._kategori = data.kategori || kategori;
+          agendaName = data.agenda || agenda;
+          hydrateAnggotaCache(data.members || []);
+          scannedNIMs = new Set();
+          sessionId++;
+          resetSessionLog();
+
+          document.getElementById("setup-section").style.display = "none";
+          document.getElementById("import-section").style.display = "none";
+          document.getElementById("scanner-section").style.display = "block";
+          document.getElementById("agendaBadge").textContent =
+            `${window._kategori} • ${agendaName}`;
+          document.getElementById("statusDot").classList.add("active");
+          document.getElementById("statusLabel").textContent = "Live";
+
+          html5QrCode = new Html5Qrcode("reader");
+          await html5QrCode.start(
             { facingMode: "environment" },
             {
-              fps: 10,
+              fps: 12,
               qrbox: { width: 220, height: 220 },
               aspectRatio: 1.0,
               showTorchButtonIfSupported: true,
             },
             onScanSuccess,
             () => {},
-          )
-          .catch((err) => {
-            alert(`Tidak bisa akses kamera: ${err}`);
-            stopScanner();
-          });
+          );
+        } catch (err) {
+          alert(`Tidak bisa memulai scan: ${err.message || err}`);
+          stopScanner();
+        } finally {
+          preparingSession = false;
+          setStartButtonState(false);
+        }
       }
 
       function stopScanner() {
+        // Menandai request lama sebagai sesi lama supaya responsnya tidak mengubah log baru.
+        sessionId++;
+
         const resetUI = () => {
           document.getElementById("setup-section").style.display = "block";
           document.getElementById("import-section").style.display = "block";
           document.getElementById("scanner-section").style.display = "none";
           document.getElementById("statusDot").classList.remove("active");
           document.getElementById("statusLabel").textContent = "Siap";
-          document.getElementById("kirimStatus").style.display = "none";
           resetManualInfo();
           html5QrCode = null;
         };
